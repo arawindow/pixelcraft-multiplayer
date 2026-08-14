@@ -93,6 +93,11 @@ const roomBadge = document.getElementById('roomBadge');
 const nameInput = document.getElementById('playerName');
 const roomInput = document.getElementById('roomCode');
 
+for(const field of [nameInput, roomInput]){
+  field.addEventListener('keydown', e => e.stopPropagation());
+  field.addEventListener('keyup', e => e.stopPropagation());
+}
+
 const chatWrap = document.getElementById('chatWrap');
 const chatMessages = document.getElementById('chatMessages');
 const chatInput = document.getElementById('chatInput');
@@ -484,6 +489,21 @@ const keys={};
 addEventListener('keydown',e=>{
   const k=e.key.toLowerCase();
 
+  // If the user is typing in any text field, do not run game controls.
+  // This fixes room-code/name entry triggering C/F/E/movement/etc.
+  const active = document.activeElement;
+  const typingInField =
+    active &&
+    (
+      active.tagName === 'INPUT' ||
+      active.tagName === 'TEXTAREA' ||
+      active.isContentEditable
+    );
+
+  if(typingInField && active !== chatInput){
+    return;
+  }
+
   if(chatOpen){
     if(e.key==='Enter'){
       sendChatMessage();
@@ -554,6 +574,16 @@ addEventListener('keydown',e=>{
 });
 addEventListener('keyup',e=>{
   if(chatOpen) return;
+
+  const active = document.activeElement;
+  if(active && (
+    active.tagName === 'INPUT' ||
+    active.tagName === 'TEXTAREA' ||
+    active.isContentEditable
+  )){
+    return;
+  }
+
   keys[e.key.toLowerCase()]=false;
 });
 chatInput.addEventListener('mousedown',e=>e.stopPropagation());
