@@ -117,6 +117,28 @@ io.on('connection',socket=>{
   socket.on('createRoom',({name}={})=>{
     const room=makeRoom();
     joinRoom(socket,room,String(name||'Player').slice(0,16));
+    
+  socket.on('chatMessage', data => {
+    const room = rooms.get(String(data?.room || ''));
+
+    if (!room || !room.players[socket.id]) return;
+
+    const player = room.players[socket.id];
+
+    let message = String(data?.message || '').trim();
+
+    // Prevent giant messages
+    message = message.slice(0, 150);
+
+    if (!message) return;
+
+    io.to(room.code).emit('chatMessage', {
+        playerId: socket.id,
+        name: player.name,
+        message,
+        time: Date.now()
+    });
+});
   });
 
   socket.on('joinRoom',({room,name}={})=>{
