@@ -515,7 +515,8 @@ socket.on("init",d=>{
   updateRenderDebug();
 
   renderer.render(scene,camera);
-  renderer.domElement.requestPointerLock();
+  // Pointer lock requires a direct user gesture in many browsers. WASD already works;
+  // click the game canvas once to enable mouse-look.
 });
 socket.on("playerState",p=>{me=p;ui();if(!$("#inventoryScreen").classList.contains("hidden"))inventoryUI()});
 socket.on("playerJoin",p=>{if(p.dimension===dimension&&!otherPlayers.has(p.id))addOther(p)});
@@ -540,7 +541,7 @@ function addChat(html,sys=false){const d=document.createElement("div");d.classNa
 
 document.addEventListener("keydown",e=>{
   if(!joined)return;
-  if(chatting){if(e.key==="Enter"){const t=$("#chatInput").value;$("#chatInput").value="";$("#chatInput").style.display="none";chatting=false;socket.emit("chat",t);renderer.domElement.requestPointerLock()}return}
+  if(chatting){if(e.key==="Enter"){const t=$("#chatInput").value;$("#chatInput").value="";$("#chatInput").style.display="none";chatting=false;socket.emit("chat",t);renderer.domElement.requestPointerLock?.()}return}
   keys[e.code]=true;
   if(e.code.startsWith("Digit")){const i=+e.code.slice(5)-1;if(i>=0&&i<9){selected=i;ui()}}
   if(e.code==="KeyE")openModal("inventoryScreen",inventoryUI);
@@ -554,7 +555,7 @@ document.addEventListener("keyup",e=>keys[e.code]=false);
 document.addEventListener("mousemove",e=>{if(document.pointerLockElement!==renderer.domElement||chatting)return;yaw-=e.movementX*.0022;pitch=Math.max(-1.5,Math.min(1.5,pitch-e.movementY*.0022));camera.rotation.order="YXZ";camera.rotation.y=yaw;camera.rotation.x=pitch});
 document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>closeModal(b.dataset.close));
 function openModal(id,cb){document.exitPointerLock();$("#"+id).classList.remove("hidden");cb&&cb()}
-function closeModal(id){$("#"+id).classList.add("hidden");renderer.domElement.requestPointerLock()}
+function closeModal(id){$("#"+id).classList.add("hidden");renderer.domElement.requestPointerLock?.()}
 
 const ray=new THREE.Raycaster();ray.far=6;
 function rayHit(){
@@ -576,6 +577,18 @@ function rayHit(){
 renderer.domElement.addEventListener("mousedown",e=>{if(document.pointerLockElement!==renderer.domElement)return;if(e.button===0){mouse.down=true;mineProgress=0}else if(e.button===2)rightAction()});
 renderer.domElement.addEventListener("mouseup",e=>{if(e.button===0){mouse.down=false;mineProgress=0;$("#mineFill").style.width="0"}});
 renderer.domElement.addEventListener("contextmenu",e=>e.preventDefault());
+
+renderer.domElement.addEventListener("click",()=>{
+  if(!joined||chatting)return;
+  const modalOpen =
+    !$("#inventoryScreen").classList.contains("hidden")||
+    !$("#containerScreen").classList.contains("hidden")||
+    !$("#achievementsScreen").classList.contains("hidden");
+  if(!modalOpen && document.pointerLockElement!==renderer.domElement){
+    renderer.domElement.requestPointerLock?.();
+  }
+});
+
 
 function toolDamage(){
   const item=me.hotbar[selected]||"";return item.includes("sword")?6:item.includes("pickaxe")?4:2;
@@ -641,7 +654,7 @@ function openContainerUI(d){
 }
 
 function move(dt){
-  if(!joined||document.pointerLockElement!==renderer.domElement)return;
+  if(!joined||chatting||!$("#inventoryScreen").classList.contains("hidden")||!$("#containerScreen").classList.contains("hidden")||!$("#achievementsScreen").classList.contains("hidden"))return;
   let ix=0,iz=0;if(keys.KeyW)iz-=1;if(keys.KeyS)iz+=1;if(keys.KeyA)ix-=1;if(keys.KeyD)ix+=1;
   if(riding&&entities[riding]){
     const e=entities[riding],sp=e.type==="boat"?6:8;const f=new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw));e.pos[0]+=f.x*(-iz)*sp*dt;e.pos[2]+=f.z*(-iz)*sp*dt;camera.position.set(e.pos[0],e.pos[1]+1.8,e.pos[2]);socket.volatile.emit("vehicleMove",{id:riding,pos:e.pos});return;
