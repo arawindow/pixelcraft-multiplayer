@@ -8,12 +8,20 @@ const otherPlayers=new Map(), entityMeshes=new Map(), blockMeshes=new Map();
 const keys={}, mouse={down:false}, clock=new THREE.Clock();
 let yaw=0,pitch=0,velY=0,grounded=false, mineTarget=null,mineProgress=0,chatting=false, currentContainer=null, riding=null, fishing=false;
 const blockGeo=new THREE.BoxGeometry(1,1,1);
+const BLOCK_RENDER_DISTANCE=48;
+const BLOCK_RENDER_DISTANCE_SQ=BLOCK_RENDER_DISTANCE*BLOCK_RENDER_DISTANCE;
+const SHADOW_BLOCK_DISTANCE=14;
+const SHADOW_BLOCK_DISTANCE_SQ=SHADOW_BLOCK_DISTANCE*SHADOW_BLOCK_DISTANCE;
+let lastVisibilityX=Infinity,lastVisibilityZ=Infinity,lastVisibilityUpdate=0;
+let lastMoveSend=0;
+let fpsTime=0,fpsFrames=0,adaptiveTime=0;
 
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x87ceeb);scene.fog=new THREE.Fog(0x87ceeb,30,85);
 const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.1,250);
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:"high-performance"});
 renderer.setSize(innerWidth,innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+let renderPixelRatio=Math.min(devicePixelRatio,1.25);
+renderer.setPixelRatio(renderPixelRatio);
 renderer.shadowMap.enabled=true;
 renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -22,7 +30,7 @@ renderer.toneMappingExposure=1.08;
 document.body.appendChild(renderer.domElement);
 const hemi=new THREE.HemisphereLight(0xddeeff,0x34402f,1.15),sun=new THREE.DirectionalLight(0xfff1d6,3.0);
 sun.position.set(24,34,14);sun.castShadow=true;
-sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-36;sun.shadow.camera.right=36;sun.shadow.camera.top=36;sun.shadow.camera.bottom=-36;
+sun.shadow.mapSize.set(1024,1024);sun.shadow.camera.left=-24;sun.shadow.camera.right=24;sun.shadow.camera.top=24;sun.shadow.camera.bottom=-24;
 sun.shadow.bias=-0.0006;
 scene.add(hemi,sun);
 const fillLight=new THREE.DirectionalLight(0x9cb8ff,.22);fillLight.position.set(-20,12,-20);scene.add(fillLight);
@@ -84,16 +92,58 @@ function makeBlock(k,t){
   const [x,y,z]=k.split(",").map(Number);
   const m=new THREE.Mesh(blockGeo,materialsFor(t));
   m.position.set(x,y,z);m.userData={x,y,z,type:t};
-  m.castShadow=SOLID.has(t)&&!["leaves","glass","ice"].includes(t);m.receiveShadow=true;
+  const dx=x-camera.position.x,dz=z-camera.position.z,dist2=dx*dx+dz*dz;
+  m.visible=dist2<=BLOCK_RENDER_DISTANCE_SQ;
+  m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ && SOLID.has(t) && !["leaves","glass","ice"].includes(t);
+  m.receiveShadow=true;
   scene.add(m);blockMeshes.set(k,m);
+}
+const NEIGHBORS=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+function isBlockExposed(x,y,z,t){
+  return !SOLID.has(t) || NEIGHBORS.some(([dx,dy,dz])=>{
+    const n=blocks[key(x+dx,y+dy,z+dz)];
+    return !n || !SOLID.has(n);
+  });
+}
+function removeBlockMesh(k){
+  const m=blockMeshes.get(k);if(!m)return;
+  scene.remove(m);blockMeshes.delete(k);
+}
+function refreshBlockVisual(x,y,z){
+  const k=key(x,y,z),t=blocks[k];
+  const shouldShow=!!t && isBlockExposed(x,y,z,t);
+  const existing=blockMeshes.get(k);
+  if(!shouldShow){if(existing)removeBlockMesh(k);return;}
+  if(existing){
+    if(existing.userData.type!==t){removeBlockMesh(k);makeBlock(k,t);}
+    return;
+  }
+  makeBlock(k,t);
+}
+function refreshBlockAndNeighbors(x,y,z){
+  refreshBlockVisual(x,y,z);
+  for(const [dx,dy,dz] of NEIGHBORS)refreshBlockVisual(x+dx,y+dy,z+dz);
 }
 function rebuildWorld(){
   for(const m of blockMeshes.values())scene.remove(m);blockMeshes.clear();
   for(const [k,t] of Object.entries(blocks)){
     const [x,y,z]=k.split(",").map(Number);
-    const exposed=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].some(([dx,dy,dz])=>!blocks[key(x+dx,y+dy,z+dz)] || !SOLID.has(blocks[key(x+dx,y+dy,z+dz)]));
-    if(exposed||!SOLID.has(t))makeBlock(k,t);
+    if(isBlockExposed(x,y,z,t))makeBlock(k,t);
   }
+  updateBlockVisibility(true);
+}
+function updateBlockVisibility(force=false){
+  const now=performance.now();
+  const mdx=camera.position.x-lastVisibilityX,mdz=camera.position.z-lastVisibilityZ;
+  if(!force && now-lastVisibilityUpdate<250 && mdx*mdx+mdz*mdz<4)return;
+  lastVisibilityUpdate=now;lastVisibilityX=camera.position.x;lastVisibilityZ=camera.position.z;
+  for(const m of blockMeshes.values()){
+    const dx=m.position.x-camera.position.x,dz=m.position.z-camera.position.z,dist2=dx*dx+dz*dz;
+    m.visible=dist2<=BLOCK_RENDER_DISTANCE_SQ;
+    m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ && SOLID.has(m.userData.type) && !["leaves","glass","ice"].includes(m.userData.type);
+  }
+  sun.position.set(camera.position.x+24,34,camera.position.z+14);
+  sun.target.position.set(camera.position.x,0,camera.position.z);scene.add(sun.target);
 }
 function blockBox(x,y,z){return {minX:x-.5,maxX:x+.5,minY:y-.5,maxY:y+.5,minZ:z-.5,maxZ:z+.5}}
 function playerBox(x,y,z){return {minX:x-.32,maxX:x+.32,minY:y-1.65,maxY:y+.15,minZ:z-.32,maxZ:z+.32}}
@@ -115,16 +165,21 @@ function spriteText(text,color="#fff"){
 }
 function addOther(p){
   const g=new THREE.Group(),body=new THREE.Mesh(new THREE.BoxGeometry(.7,1.3,.45),new THREE.MeshStandardMaterial({color:0x4a7ec7})),head=new THREE.Mesh(new THREE.BoxGeometry(.65,.65,.65),new THREE.MeshStandardMaterial({color:0xd9aa7d}));
-  body.position.y=.65;head.position.y=1.65;g.add(body,head);const tag=spriteText(p.name);tag.position.y=2.35;g.add(tag);g.position.fromArray(p.pos);scene.add(g);otherPlayers.set(p.id,{group:g,tag,speech:null});
+  body.position.y=.65;head.position.y=1.65;g.add(body,head);const tag=spriteText(p.name);tag.position.y=2.35;g.add(tag);g.position.fromArray(p.pos);scene.add(g);otherPlayers.set(p.id,{group:g,tag,speech:null,target:new THREE.Vector3(...p.pos)});
 }
 function speech(id,text){
   const o=otherPlayers.get(id);if(!o)return;if(o.speech)o.group.remove(o.speech);o.speech=spriteText(text,"#ffe68a");o.speech.position.y=2.9;o.group.add(o.speech);setTimeout(()=>{if(o.speech){o.group.remove(o.speech);o.speech=null}},5000);
 }
 function syncEntities(newEnt){
   entities=newEnt;
-  for(const [id,m] of entityMeshes)if(!entities[id]){scene.remove(m);entityMeshes.delete(id)}
+  const MAX_ENTITY_DIST2=55*55;
+  for(const [id,m] of entityMeshes){
+    const e=entities[id];
+    if(!e || e.dimension!==dimension || (e.pos[0]-camera.position.x)**2+(e.pos[2]-camera.position.z)**2>MAX_ENTITY_DIST2){scene.remove(m);entityMeshes.delete(id)}
+  }
   for(const [id,e] of Object.entries(entities)){
     if(e.dimension!==dimension)continue;
+    if((e.pos[0]-camera.position.x)**2+(e.pos[2]-camera.position.z)**2>MAX_ENTITY_DIST2)continue;
     let m=entityMeshes.get(id);
     if(!m){
       if(e.type==="drop"){m=new THREE.Mesh(new THREE.BoxGeometry(.3,.3,.3),materialFor(COLORS[e.item]?e.item:"plank"))}
@@ -132,10 +187,8 @@ function syncEntities(newEnt){
       else if(e.type==="boat"){m=new THREE.Mesh(new THREE.BoxGeometry(1.6,.35,.8),new THREE.MeshStandardMaterial({color:0x7b4c28}))}
       else if(e.type==="minecart"){m=new THREE.Mesh(new THREE.BoxGeometry(1.2,.6,.8),new THREE.MeshStandardMaterial({color:0x555555}))}
       else {const color=e.type==="hostile"?0x5f9d4a:e.type==="cow"?0x6c4b35:e.type==="sheep"?0xe8e8e8:e.type==="villager"?0xb98c68:e.type==="boss"?0x7a2d91:0xffffff;m=new THREE.Mesh(new THREE.BoxGeometry(e.type==="boss"?2.5:.9,e.type==="boss"?3:1.4,e.type==="boss"?2.5:.9),new THREE.MeshStandardMaterial({color}));}
-      m.userData={entityId:id,type:e.type};scene.add(m);entityMeshes.set(id,m);
-    }
-    m.position.fromArray(e.pos);
-    if(e.type==="drop")m.rotation.y+=.04;
+      m.userData={entityId:id,type:e.type,target:new THREE.Vector3(...e.pos)};m.position.fromArray(e.pos);scene.add(m);entityMeshes.set(id,m);
+    }else m.userData.target.set(...e.pos);
   }
 }
 
@@ -175,8 +228,12 @@ socket.on("init",d=>{
 socket.on("playerState",p=>{me=p;ui();if(!$("#inventoryScreen").classList.contains("hidden"))inventoryUI()});
 socket.on("playerJoin",p=>{if(p.dimension===dimension&&!otherPlayers.has(p.id))addOther(p)});
 socket.on("playerLeave",({id})=>{const o=otherPlayers.get(id);if(o){scene.remove(o.group);otherPlayers.delete(id)}});
-socket.on("playerMove",d=>{const o=otherPlayers.get(d.id);if(o)o.group.position.fromArray(d.pos)});
-socket.on("blockUpdate",d=>{const kk=key(d.x,d.y,d.z);if(d.type)blocks[kk]=d.type;else delete blocks[kk];rebuildWorld()});
+socket.on("playerMove",d=>{const o=otherPlayers.get(d.id);if(o)o.target.set(...d.pos)});
+socket.on("blockUpdate",d=>{
+  const kk=key(d.x,d.y,d.z);
+  if(d.type)blocks[kk]=d.type;else delete blocks[kk];
+  refreshBlockAndNeighbors(d.x,d.y,d.z);
+});
 socket.on("entitySync",syncEntities);
 socket.on("tick",d=>{syncEntities(d.entities);crops=d.crops;automation=d.automation;updateSky(d.time,d.weather)});
 socket.on("dimensionChange",d=>{
@@ -288,7 +345,11 @@ function move(dt){
   if(here==="water"){velY=Math.max(velY,-1.5);if(keys.Space)velY=2.2}else velY-=17.5*dt;
   const moved=axisMove("y",velY*dt);if(!moved){if(velY<0)grounded=true;velY=0}else grounded=false;
   if(camera.position.y<-15){camera.position.set(0,10,0);velY=0}
-  socket.volatile.emit("move",{pos:[camera.position.x,camera.position.y,camera.position.z],yaw,pitch});
+  const sendNow=performance.now();
+  if(sendNow-lastMoveSend>66){
+    lastMoveSend=sendNow;
+    socket.volatile.emit("move",{pos:[camera.position.x,camera.position.y,camera.position.z],yaw,pitch});
+  }
 }
 function updateSky(time,weather){
   const a=time*Math.PI*2, daylight=Math.max(.035,Math.sin(a)*.9+.14);
@@ -313,7 +374,33 @@ let audioCtx=null;
 function sound(freq=220,d=.06){if(!audioCtx)audioCtx=new AudioContext();const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.frequency.value=freq;g.gain.value=.025;o.connect(g).connect(audioCtx.destination);o.start();g.gain.exponentialRampToValueAtTime(.0001,audioCtx.currentTime+d);o.stop(audioCtx.currentTime+d)}
 renderer.domElement.addEventListener("click",()=>sound(180,.03));
 
-function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),.05);move(dt);mineTick(dt);for(const [id,e] of Object.entries(entities)){if(e.type==="drop"&&e.dimension===dimension){const dx=e.pos[0]-camera.position.x,dy=e.pos[1]-camera.position.y,dz=e.pos[2]-camera.position.z;if(dx*dx+dy*dy+dz*dz<2.4)socket.emit("pickup",{id})}}renderer.render(scene,camera)}
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),.05);
+  move(dt);mineTick(dt);updateBlockVisibility();
+  for(const o of otherPlayers.values())o.group.position.lerp(o.target,Math.min(1,dt*12));
+  for(const [id,m] of entityMeshes){
+    const e=entities[id];
+    if(e&&m.userData.target)m.position.lerp(m.userData.target,Math.min(1,dt*9));
+    if(e&&e.type==="drop")m.rotation.y+=dt*2.2;
+  }
+  for(const [id,e] of Object.entries(entities)){
+    if(e.type==="drop"&&e.dimension===dimension){
+      const dx=e.pos[0]-camera.position.x,dy=e.pos[1]-camera.position.y,dz=e.pos[2]-camera.position.z;
+      if(dx*dx+dy*dy+dz*dz<2.4)socket.emit("pickup",{id});
+    }
+  }
+  fpsTime+=dt;fpsFrames++;adaptiveTime+=dt;
+  if(adaptiveTime>2){
+    const fps=fpsFrames/Math.max(.001,fpsTime);
+    let next=renderPixelRatio;
+    if(fps<42)next=Math.max(.9,renderPixelRatio-.1);
+    else if(fps>57)next=Math.min(Math.min(devicePixelRatio,1.35),renderPixelRatio+.05);
+    if(Math.abs(next-renderPixelRatio)>.02){renderPixelRatio=next;renderer.setPixelRatio(renderPixelRatio);renderer.setSize(innerWidth,innerHeight,false)}
+    fpsTime=0;fpsFrames=0;adaptiveTime=0;
+  }
+  renderer.render(scene,camera);
+}
 animate();
 window.addEventListener("resize",()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
 

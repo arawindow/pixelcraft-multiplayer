@@ -469,7 +469,7 @@ function sim(){
 
   for(const dim of DIMENSIONS) io.to(dim).emit("tick",{time:state.dimensions[dim].time,weather:state.dimensions[dim].weather,entities:state.entities,crops:state.crops,automation:state.automation});
 }
-setInterval(sim,100);
+setInterval(sim,200);
 
 const PORT=process.env.PORT||3000;
 server.listen(PORT,()=>console.log("Blockcraft Complete on",PORT));

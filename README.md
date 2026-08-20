@@ -79,3 +79,8 @@ This is an original browser voxel game. It does not use Minecraft textures, soun
 This build includes original 96×96 textured voxel materials in `assets/textures/`, per-face grass/log materials, bump mapping, anisotropic filtering, ACES filmic tone mapping, soft 2048px shadows, atmospheric fog, weather-dependent lighting, transparent water/glass/ice, and emissive lava/portal/light materials.
 
 All included textures are original generated assets for Blockcraft and do not use Minecraft texture files.
+
+
+## Safe performance pass
+
+This build deliberately keeps the original working per-block Three.js renderer and semi-realistic materials. Performance changes are conservative: incremental block visual updates instead of full-world rebuilds, 48-block visual distance, nearby-only shadow casting, 1024px shadow map, adaptive 0.9–1.35 render pixel ratio, 15Hz player network updates, 5Hz server simulation snapshots, entity distance culling, and interpolation for remote players/entities. No chunk renderer, custom geometry, texture atlas, or instanced terrain is used.
