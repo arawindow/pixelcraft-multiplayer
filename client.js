@@ -5,6 +5,9 @@ const $=s=>document.querySelector(s);
 const login=$("#login"), hud=$("#hud"), chatWrap=$("#chatWrap"),help=$("#help");
 let me=null, joined=false, dimension="overworld", blocks={}, entities={}, crops={}, automation={}, selected=0;
 const otherPlayers=new Map(), entityMeshes=new Map(), blockMeshes=new Map();
+const WORLD_CHUNK_SIZE=16,WORLD_STREAM_RADIUS=3,WORLD_KEEP_RADIUS=4;
+const loadedWorldChunks=new Set(),requestedWorldChunks=new Set();let lastWorldStreamChunk=null;
+const worldChunkKey=(cx,cz)=>`${cx},${cz}`;const worldChunkCoord=v=>Math.floor(Math.floor(v)/WORLD_CHUNK_SIZE);
 const keys={}, mouse={down:false}, clock=new THREE.Clock();
 let yaw=0,pitch=0,velY=0,grounded=false, mineTarget=null,mineProgress=0,chatting=false, currentContainer=null, riding=null, fishing=false;
 const blockGeo=new THREE.BoxGeometry(1,1,1);
@@ -139,6 +142,13 @@ function refreshBlockAndNeighbors(x,y,z){
   refreshBlockVisual(x,y,z);
   for(const [dx,dy,dz] of NEIGHBORS)refreshBlockVisual(x+dx,y+dy,z+dz);
 }
+
+function requestWorldChunk(cx,cz){const ck=worldChunkKey(cx,cz);if(loadedWorldChunks.has(ck)||requestedWorldChunks.has(ck))return;requestedWorldChunks.add(ck);socket.emit("chunkRequest",{dimension,cx,cz})}
+function streamWorldChunks(force=false){
+  if(!joined)return;const cx=worldChunkCoord(camera.position.x),cz=worldChunkCoord(camera.position.z);if(!force&&lastWorldStreamChunk&&lastWorldStreamChunk[0]===cx&&lastWorldStreamChunk[1]===cz)return;lastWorldStreamChunk=[cx,cz];
+  for(let dz=-WORLD_STREAM_RADIUS;dz<=WORLD_STREAM_RADIUS;dz++)for(let dx=-WORLD_STREAM_RADIUS;dx<=WORLD_STREAM_RADIUS;dx++)requestWorldChunk(cx+dx,cz+dz);
+  for(const ck of [...loadedWorldChunks]){const [ccx,ccz]=ck.split(",").map(Number);if(Math.abs(ccx-cx)<=WORLD_KEEP_RADIUS&&Math.abs(ccz-cz)<=WORLD_KEEP_RADIUS)continue;loadedWorldChunks.delete(ck);requestedWorldChunks.delete(ck);for(const kk of Object.keys(blocks)){const [x,,z]=kk.split(",").map(Number);if(worldChunkCoord(x)===ccx&&worldChunkCoord(z)===ccz){removeBlockMesh(kk);delete blocks[kk]}}}
+}
 function rebuildWorld(){
   for(const m of blockMeshes.values())scene.remove(m);blockMeshes.clear();
   for(const [k,t] of Object.entries(blocks)){
@@ -272,13 +282,19 @@ $("#joinBtn").onclick=()=>socket.emit("join",{username:$("#username").value});
 $("#username").addEventListener("keydown",e=>{if(e.key==="Enter")$("#joinBtn").click()});
 socket.on("joinError",e=>$("#loginError").textContent=e);
 socket.on("init",d=>{
-  me=d.self;dimension=me.dimension;blocks=d.dimensions[dimension].blocks;entities=d.entities;crops=d.crops;automation=d.automation;joined=true;
-  camera.position.fromArray(me.pos);login.classList.add("hidden");hud.classList.remove("hidden");chatWrap.classList.remove("hidden");help.classList.remove("hidden");rebuildWorld();syncEntities(entities);d.players.filter(p=>p.dimension===dimension).forEach(addOther);ui();renderer.domElement.requestPointerLock();
+  me=d.self;dimension=me.dimension;blocks=d.dimensions[dimension].blocks;
+  loadedWorldChunks.clear();requestedWorldChunks.clear();lastWorldStreamChunk=null;
+  for(const kk of Object.keys(blocks)){const [x,,z]=kk.split(",").map(Number);loadedWorldChunks.add(worldChunkKey(worldChunkCoord(x),worldChunkCoord(z)))}entities=d.entities;crops=d.crops;automation=d.automation;joined=true;
+  camera.position.fromArray(me.pos);login.classList.add("hidden");hud.classList.remove("hidden");chatWrap.classList.remove("hidden");help.classList.remove("hidden");rebuildWorld();syncEntities(entities);d.players.filter(p=>p.dimension===dimension).forEach(addOther);ui();streamWorldChunks(true);renderer.domElement.requestPointerLock();
 });
 socket.on("playerState",p=>{me=p;ui();if(!$("#inventoryScreen").classList.contains("hidden"))inventoryUI()});
 socket.on("playerJoin",p=>{if(p.dimension===dimension&&!otherPlayers.has(p.id))addOther(p)});
 socket.on("playerLeave",({id})=>{const o=otherPlayers.get(id);if(o){scene.remove(o.group);otherPlayers.delete(id)}});
 socket.on("playerMove",d=>{const o=otherPlayers.get(d.id);if(o)o.target.set(...d.pos)});
+socket.on("chunkData",d=>{
+  if(d.dimension!==dimension)return;const ck=worldChunkKey(d.cx,d.cz);requestedWorldChunks.delete(ck);loadedWorldChunks.add(ck);
+  for(const [kk,type] of Object.entries(d.blocks||{})){blocks[kk]=type;const [x,y,z]=kk.split(",").map(Number);const dx=x-camera.position.x,dz=z-camera.position.z;if(dx*dx+dz*dz<=BLOCK_RENDER_DISTANCE_SQ&&isBlockExposed(x,y,z,type))refreshBlockVisual(x,y,z)}
+});
 socket.on("blockUpdate",d=>{
   const kk=key(d.x,d.y,d.z);
   if(!d.type&&d.oldType)spawnBreakParticles(d.x,d.y,d.z,d.oldType);
@@ -509,7 +525,7 @@ renderer.domElement.addEventListener("click",()=>sound(180,.03));
 function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),.05);
-  move(dt);mineTick(dt);updateBlockVisibility();updateParticles(dt);updateWeatherParticles(dt);
+  move(dt);mineTick(dt);streamWorldChunks();updateBlockVisibility();updateParticles(dt);updateWeatherParticles(dt);
   for(const o of otherPlayers.values())o.group.position.lerp(o.target,Math.min(1,dt*12));
   for(const [id,m] of entityMeshes){
     const e=entities[id];

@@ -28,6 +28,8 @@ const BLOCKS = [
 ];
 const PLACEABLE = new Set(BLOCKS.filter(x=>x!=="door_open"));
 const DIMENSIONS = ["overworld","ember","void"];
+const WORLD_CHUNK_SIZE=16;
+const SERVER_GEN_RADIUS=3;
 const k=(x,y,z)=>`${x},${y},${z}`;
 
 const TOOL_MAX = {
@@ -115,14 +117,14 @@ function newState(){
       void:{blocks:{},time:.82,weather:"clear"}
     },
     players:{}, containers:{}, furnaces:{}, crops:{}, entities:{},
-    structuresGenerated:{}, automation:{}, achievementsGlobal:[]
+    structuresGenerated:{}, automation:{}, achievementsGlobal:[], generatedChunks:{}
   };
 }
 let state = newState();
 try{ if(fs.existsSync(SAVE)) state=JSON.parse(fs.readFileSync(SAVE,"utf8")); }catch(e){console.error("save load",e)}
 state.version=5;
 state.players ||= {}; state.containers ||= {}; state.furnaces ||= {}; state.crops ||= {}; state.entities ||= {};
-state.structuresGenerated ||= {}; state.automation ||= {};
+state.structuresGenerated ||= {}; state.automation ||= {}; state.generatedChunks ||= {};
 state.dimensions ||= newState().dimensions;
 for(const dim of DIMENSIONS) state.dimensions[dim] ||= {blocks:{},time:.2,weather:"clear"};
 
@@ -150,58 +152,62 @@ function terrainHeight(dim,x,z){
   return 0;
 }
 
-function generateDimension(dim){
-  const d=state.dimensions[dim];
-  if(Object.keys(d.blocks).length)return;
-  const R=38,seed=state.seed%1000;
-  if(dim==="overworld"){
-    for(let x=-R;x<=R;x++)for(let z=-R;z<=R;z++){
-      const biome=biomeAt(x,z,seed);
-      let h=Math.floor(3+noise(x,z,seed));
-      if(biome==="mountains")h+=Math.floor(Math.max(0,noise(x*.8,z*.8,seed))*1.5)+2;
-      if(biome==="desert")h=Math.min(h,4);
-      for(let y=-5;y<=h;y++){
-        const cave = y<h-2 && y>-4 && (Math.sin(x*.44+y*.72+z*.39)+Math.cos(x*.19-y*.63+z*.51)>1.48);
-        if(cave)continue;
-        let t="stone";
-        if(y===h)t=biome==="desert"?"sand":biome==="snow"?"snow":"grass";
-        else if(y>=h-2)t=biome==="desert"?"sand":"dirt";
-        else {
-          const r=Math.abs(Math.sin(x*12.9898+z*78.233+y*37.719+seed));
-          if(y<-1&&r>.988)t="diamond_ore";
-          else if(y<2&&r>.96)t="gold_ore";
-          else if(r>.91)t="iron_ore";
-          else if(r>.83)t="coal_ore";
-        }
-        setBlock(dim,x,y,z,t);
-      }
-      if((biome==="forest"&&Math.random()<.08)||(biome==="plains"&&Math.random()<.018)){
-        if(Math.abs(x)>4||Math.abs(z)>4){
-          const trunk=3+Math.floor(Math.random()*2);
-          for(let y=1;y<=trunk;y++)setBlock(dim,x,h+y,z,"wood");
-          for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)for(let dy=trunk-1;dy<=trunk+1;dy++){
-            if(Math.abs(dx)+Math.abs(dz)<4)setBlock(dim,x+dx,h+dy,z+dz,"leaves");
-          }
-        }
-      }
-      if(biome==="desert"&&Math.random()<.012){
-        for(let y=1;y<=3;y++)setBlock(dim,x,h+y,z,"fence");
-      }
-    }
-  } else if(dim==="ember"){
-    for(let x=-R;x<=R;x++)for(let z=-R;z<=R;z++){
-      const h=Math.floor(1+noise(x,z,55)*.6);
-      for(let y=-4;y<=h;y++)setBlock(dim,x,y,z,y===h?"brick":"stone");
-      if(Math.random()<.03)setBlock(dim,x,h+1,z,"lava");
-    }
-  } else {
-    for(let x=-R;x<=R;x++)for(let z=-R;z<=R;z++){
-      if(Math.hypot(x,z)<22&&noise(x,z,99)>-.35){
-        const h=Math.floor(noise(x,z,99)*.25);
-        for(let y=-2;y<=h;y++)setBlock(dim,x,y,z,y===h?"obsidian":"stone");
-      }
+
+function floorDiv(n,d){return Math.floor(n/d)}
+function worldChunkKey(cx,cz){return `${cx},${cz}`}
+function chunkCoordsForPos(x,z){return [floorDiv(Math.floor(x),WORLD_CHUNK_SIZE),floorDiv(Math.floor(z),WORLD_CHUNK_SIZE)]}
+function markExistingChunksGenerated(){
+  for(const dim of DIMENSIONS){
+    for(const kk of Object.keys(state.dimensions[dim].blocks||{})){
+      const [x,,z]=kk.split(",").map(Number);
+      state.generatedChunks[`${dim}:${worldChunkKey(floorDiv(x,WORLD_CHUNK_SIZE),floorDiv(z,WORLD_CHUNK_SIZE))}`]=true;
     }
   }
+}
+markExistingChunksGenerated();
+function generateOverworldChunk(cx,cz){
+  const marker=`overworld:${worldChunkKey(cx,cz)}`;if(state.generatedChunks[marker])return;
+  const seed=state.seed%1000,minX=cx*WORLD_CHUNK_SIZE,minZ=cz*WORLD_CHUNK_SIZE;
+  for(let lx=0;lx<WORLD_CHUNK_SIZE;lx++)for(let lz=0;lz<WORLD_CHUNK_SIZE;lz++){
+    const x=minX+lx,z=minZ+lz,biome=biomeAt(x,z,seed);let h=Math.floor(3+noise(x,z,seed));
+    if(biome==="mountains")h+=Math.floor(Math.max(0,noise(x*.8,z*.8,seed))*1.5)+2;if(biome==="desert")h=Math.min(h,4);
+    for(let y=-5;y<=h;y++){
+      const cave=y<h-2&&y>-4&&(Math.sin(x*.44+y*.72+z*.39)+Math.cos(x*.19-y*.63+z*.51)>1.48);if(cave)continue;
+      let type="stone";
+      if(y===h)type=biome==="desert"?"sand":biome==="snow"?"snow":"grass";else if(y>=h-2)type=biome==="desert"?"sand":"dirt";else{
+        const ore=Math.abs(Math.sin(x*12.9898+z*78.233+y*37.719+seed));
+        if(y<-1&&ore>.988)type="diamond_ore";else if(y<2&&ore>.96)type="gold_ore";else if(ore>.91)type="iron_ore";else if(ore>.83)type="coal_ore";
+      }setBlock("overworld",x,y,z,type);
+    }
+    const tree=Math.abs(Math.sin(x*91.17+z*47.73+seed*.13)),canTree=lx>=2&&lx<=13&&lz>=2&&lz<=13;
+    if(canTree&&((biome==="forest"&&tree>.92)||(biome==="plains"&&tree>.985))){
+      const trunk=3+(Math.abs(Math.floor(Math.sin(x+z+seed)*1000))%2);for(let y=1;y<=trunk;y++)setBlock("overworld",x,h+y,z,"wood");
+      for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)for(let dy=trunk-1;dy<=trunk+1;dy++)if(Math.abs(dx)+Math.abs(dz)<4)setBlock("overworld",x+dx,h+dy,z+dz,"leaves");
+    }
+  }state.generatedChunks[marker]=true;
+}
+function generateOtherChunk(dim,cx,cz){
+  const marker=`${dim}:${worldChunkKey(cx,cz)}`;if(state.generatedChunks[marker])return;const minX=cx*WORLD_CHUNK_SIZE,minZ=cz*WORLD_CHUNK_SIZE;
+  for(let lx=0;lx<WORLD_CHUNK_SIZE;lx++)for(let lz=0;lz<WORLD_CHUNK_SIZE;lz++){
+    const x=minX+lx,z=minZ+lz;if(dim==="ember"){
+      const h=Math.floor(1+noise(x,z,55)*.6);for(let y=-4;y<=h;y++)setBlock(dim,x,y,z,y===h?"brick":"stone");if(Math.abs(Math.sin(x*7.1+z*2.3))>.985)setBlock(dim,x,h+1,z,"lava");
+    }else if(noise(x,z,99)>-.35){const h=Math.floor(noise(x,z,99)*.25);for(let y=-2;y<=h;y++)setBlock(dim,x,y,z,y===h?"obsidian":"stone");}
+  }state.generatedChunks[marker]=true;
+}
+function ensureWorldChunk(dim,cx,cz){if(dim==="overworld")generateOverworldChunk(cx,cz);else generateOtherChunk(dim,cx,cz)}
+function ensureChunksAround(dim,x,z,r=SERVER_GEN_RADIUS){const [cx,cz]=chunkCoordsForPos(x,z);for(let dz=-r;dz<=r;dz++)for(let dx=-r;dx<=r;dx++)ensureWorldChunk(dim,cx+dx,cz+dz)}
+function chunkPayload(dim,cx,cz){
+  ensureWorldChunk(dim,cx,cz);const minX=cx*WORLD_CHUNK_SIZE,minZ=cz*WORLD_CHUNK_SIZE,maxX=minX+WORLD_CHUNK_SIZE-1,maxZ=minZ+WORLD_CHUNK_SIZE-1,out={};
+  for(const [kk,type] of Object.entries(state.dimensions[dim].blocks)){const [x,,z]=kk.split(",").map(Number);if(x>=minX&&x<=maxX&&z>=minZ&&z<=maxZ)out[kk]=type}return {dimension:dim,cx,cz,blocks:out};
+}
+function initialDimensionPayload(dim,x,z){
+  ensureChunksAround(dim,x,z,SERVER_GEN_RADIUS);const [pcx,pcz]=chunkCoordsForPos(x,z),blocks={};
+  for(let dz=-SERVER_GEN_RADIUS;dz<=SERVER_GEN_RADIUS;dz++)for(let dx=-SERVER_GEN_RADIUS;dx<=SERVER_GEN_RADIUS;dx++)Object.assign(blocks,chunkPayload(dim,pcx+dx,pcz+dz).blocks);
+  return {blocks,time:state.dimensions[dim].time,weather:state.dimensions[dim].weather};
+}
+function generateDimension(dim){
+  if(Object.keys(state.dimensions[dim].blocks).length)return;
+  ensureChunksAround(dim,0,0,2);
 }
 DIMENSIONS.forEach(generateDimension);
 
@@ -344,17 +350,25 @@ io.on("connection",socket=>{
     if([...online.values()].includes(username))return socket.emit("joinError","That username is already online.");
     if(!state.players[username])state.players[username]=defaultPlayer(username);
     const p=migratePlayer(state.players[username],username);recomputeArmor(p);
+    ensureChunksAround(p.dimension,p.pos[0],p.pos[2]);p._chunk=chunkCoordsForPos(p.pos[0],p.pos[2]);
     online.set(socket.id,username);socket.join(p.dimension);
-    socket.emit("init",{self:p,dimensions:state.dimensions,entities:state.entities,containers:state.containers,furnaces:state.furnaces,crops:state.crops,automation:state.automation,
+    const partialDimensions={};for(const dim of DIMENSIONS)partialDimensions[dim]=dim===p.dimension?initialDimensionPayload(dim,p.pos[0],p.pos[2]):{blocks:{},time:state.dimensions[dim].time,weather:state.dimensions[dim].weather};
+    socket.emit("init",{self:p,dimensions:partialDimensions,entities:state.entities,containers:state.containers,furnaces:state.furnaces,crops:state.crops,automation:state.automation,
       players:[...online.entries()].filter(([id])=>id!==socket.id).map(([id,n])=>publicPlayer(state.players[n],id))});
     socket.to(p.dimension).emit("playerJoin",publicPlayer(p,socket.id));
     io.to(p.dimension).emit("systemChat",`${username} joined the world`);
   });
 
+  socket.on("chunkRequest",({dimension,cx,cz})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];if(dimension!==p.dimension||!Number.isInteger(cx)||!Number.isInteger(cz))return;
+    const [pcx,pcz]=chunkCoordsForPos(p.pos[0],p.pos[2]);if(Math.abs(cx-pcx)>6||Math.abs(cz-pcz)>6)return;socket.emit("chunkData",chunkPayload(dimension,cx,cz));
+  });
+
   socket.on("move",d=>{
     const n=online.get(socket.id);if(!n)return;const p=state.players[n];
     if(!Array.isArray(d.pos)||d.pos.length!==3||d.pos.some(v=>!Number.isFinite(v)))return;
-    p.pos=d.pos.map(v=>Math.max(-200,Math.min(200,v)));p.yaw=+d.yaw||0;p.pitch=+d.pitch||0;
+    p.pos=[d.pos[0],Math.max(-40,Math.min(80,d.pos[1])),d.pos[2]];p.yaw=+d.yaw||0;p.pitch=+d.pitch||0;
+    const nc=chunkCoordsForPos(p.pos[0],p.pos[2]);if(!p._chunk||p._chunk[0]!==nc[0]||p._chunk[1]!==nc[1]){p._chunk=nc;ensureChunksAround(p.dimension,p.pos[0],p.pos[2]);}
     socket.to(p.dimension).volatile.emit("playerMove",{id:socket.id,pos:p.pos,yaw:p.yaw,pitch:p.pitch});
   });
   socket.on("chat",text=>{
@@ -364,7 +378,7 @@ io.on("connection",socket=>{
 
   socket.on("block",d=>{
     const n=online.get(socket.id);if(!n)return;const p=state.players[n];
-    const {x,y,z}=d;if(![x,y,z].every(Number.isInteger)||Math.abs(x)>120||Math.abs(z)>120||y<-20||y>45)return;
+    const {x,y,z}=d;if(![x,y,z].every(Number.isInteger)||y<-20||y>45)return;
     if(d.action==="break"){
       const t=getBlock(p.dimension,x,y,z);if(!t)return;
       const tool=String(d.tool||"");

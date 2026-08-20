@@ -119,3 +119,11 @@ The renderer itself remains the conservative working Mesh-per-visible-block rend
 - A fixed 1024×1024 soft shadow map and tighter shadow camera reduce flickering/shimmer.
 - `normalBias` is used to reduce shadow acne on voxel surfaces.
 - Rain and storms remain available, but they only change daylight brightness and fog.
+
+
+## Infinite procedural world
+- Persistent terrain generates in 16x16 chunks as players travel.
+- Existing saved builds are protected from regeneration.
+- The browser keeps nearby chunks only and unloads distant data/meshes.
+- Returning streams saved chunks back from the server.
+- The working semi-realistic renderer and permanent daytime are preserved.
