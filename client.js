@@ -66,9 +66,9 @@ function tileUV(name){
   const vTop=(r*CELL+PAD+eps)/ATLAS_H, vBot=(r*CELL+PAD+INNER-eps)/ATLAS_H;
   return [u0,1-vBot,u1,1-vTop];
 }
-const terrainMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,bumpMap:atlasHeight,bumpScale:.075,roughness:.84,metalness:.02,side:THREE.DoubleSide});
-const transparentMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,bumpMap:atlasHeight,bumpScale:.035,roughness:.48,transparent:true,opacity:.76,alphaTest:.04,depthWrite:false,side:THREE.DoubleSide});
-const emissiveMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,emissiveMap:atlasMap,emissive:0xff7638,emissiveIntensity:1.15,bumpMap:atlasHeight,bumpScale:.04,roughness:.6,side:THREE.DoubleSide});
+const terrainMaterial=new THREE.MeshLambertMaterial({color:0xffffff,map:atlasMap,side:THREE.DoubleSide});
+const transparentMaterial=new THREE.MeshLambertMaterial({color:0xffffff,map:atlasMap,transparent:true,opacity:.78,alphaTest:.03,depthWrite:false,side:THREE.DoubleSide});
+const emissiveMaterial=new THREE.MeshBasicMaterial({color:0xffffff,map:atlasMap,side:THREE.DoubleSide});
 const entityDropMaterial=new THREE.MeshStandardMaterial({map:atlasMap,roughness:.75});
 
 const key=(x,y,z)=>`${x},${y},${z}`;
@@ -166,19 +166,32 @@ function buildChunk(cx,cz){
   const matrix=new THREE.Matrix4();
   const pc=lastPlayerChunk||[cx,cz];
   const dist=Math.max(Math.abs(cx-pc[0]),Math.abs(cz-pc[1]));
+  const originX=cx*CHUNK_SIZE, originZ=cz*CHUNK_SIZE;
 
   for(const [type,positions] of byType){
     if(!positions.length)continue;
     const mesh=new THREE.InstancedMesh(cubeGeometryFor(type),materialForBlock(type),positions.length);
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    mesh.userData={layer:TRANSPARENT.has(type)?"transparent":EMISSIVE.has(type)?"emissive":"terrain",type,instanceBlocks:positions};
+    mesh.userData={
+      layer:TRANSPARENT.has(type)?"transparent":EMISSIVE.has(type)?"emissive":"terrain",
+      type,
+      instanceBlocks:positions
+    };
+
+    // Chunk mesh itself sits at the chunk origin. Every instance is local to it.
+    // This keeps bounding volumes small and avoids world-space precision/culling issues.
+    mesh.position.set(originX,0,originZ);
+
     for(let i=0;i<positions.length;i++){
       const [x,y,z]=positions[i];
-      matrix.makeTranslation(x,y,z);
+      matrix.makeTranslation(x-originX,y,z-originZ);
       mesh.setMatrixAt(i,matrix);
     }
     mesh.instanceMatrix.needsUpdate=true;
-    mesh.computeBoundingSphere();
+
+    // There are only a small number of streamed chunk meshes, so disabling
+    // frustum culling is cheap and avoids driver/browser InstancedMesh bounds issues.
+    mesh.frustumCulled=false;
     mesh.receiveShadow=true;
     mesh.castShadow=dist<=SHADOW_DISTANCE && mesh.userData.layer==="terrain";
     if(mesh.userData.layer==="transparent")mesh.renderOrder=2;
@@ -350,7 +363,7 @@ socket.on("init",d=>{
   entities=d.entities||{};crops=d.crops||{};automation=d.automation||{};joined=true;
   indexWorld();
   const safe=findSafeSpawn(me.pos);
-  camera.position.fromArray(safe);me.pos=[...safe];
+  camera.position.fromArray(safe);me.pos=[...safe];pitch=-0.18;camera.rotation.order="YXZ";camera.rotation.x=pitch;camera.rotation.y=yaw;
   clearChunks();updateVisibleChunks(true);
   const pc=chunkForPos(camera.position.x,camera.position.z);
   // Force the player's current chunk and immediate neighbors to exist before the first visible frame.
@@ -506,8 +519,8 @@ function updateSky(time,weather){
   if(weather==="rain")sky.lerp(new THREE.Color(0x5f7180),.48);
   if(weather==="storm")sky.lerp(new THREE.Color(0x303842),.68);
   scene.background.copy(sky);scene.fog.color.copy(sky);
-  scene.fog.near=weather==="storm"?18:weather==="rain"?25:34;
-  scene.fog.far=weather==="storm"?58:weather==="rain"?70:92;
+  scene.fog.near=weather==="storm"?24:weather==="rain"?32:42;
+  scene.fog.far=weather==="storm"?70:weather==="rain"?86:110;
   sun.intensity=daylight*3.0*(weather==="storm"?.42:weather==="rain"?.7:1);
   hemi.intensity=.52+daylight*.92;
   sun.color.set(daylight<.4?0xffb77a:0xfff0d2);
