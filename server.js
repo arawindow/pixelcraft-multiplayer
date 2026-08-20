@@ -1,912 +1,476 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const { Pool } = require('pg');
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 2e6 });
 
-app.use(express.static(__dirname));
+app.get("/", (_,res)=>res.sendFile(path.join(__dirname,"index.html")));
+app.get("/index.html", (_,res)=>res.sendFile(path.join(__dirname,"index.html")));
+app.get("/client.js", (_,res)=>res.sendFile(path.join(__dirname,"client.js")));
+app.get("/style.css", (_,res)=>res.sendFile(path.join(__dirname,"style.css")));
+app.use("/assets", express.static(path.join(__dirname,"assets")));
+app.get("/health", (_,res)=>res.json({ok:true,players:io.engine.clientsCount}));
 
-const PORT = process.env.PORT || 3000;
-const TILE = 24;
-const WORLD_W = 260;
-const WORLD_H = 90;
-const rooms = new Map();
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const SAVE = path.join(DATA_DIR,"world.json");
+fs.mkdirSync(DATA_DIR,{recursive:true});
 
-const T = {
-  AIR:0, GRASS:1, DIRT:2, STONE:3, WOOD:4, LEAF:5, COAL:6, IRON:7,
-  SAND:8, WATER:9, CRAFT:10, FURNACE:11, CHEST:12, TORCH:13,
-  SNOW:14, CACTUS:15, GLASS:16, BED:17
-};
-const I = {
-  PLANK:101, STICK:102, WOOD_PICK:103, STONE_PICK:104, TORCH:105,
-  RAW_MEAT:106, COOKED_MEAT:107, IRON_INGOT:108, IRON_PICK:109,
-  WOOD_AXE:110, STONE_AXE:111, IRON_AXE:112,
-  WOOD_SWORD:113, STONE_SWORD:114, IRON_SWORD:115, WOOL:116
-};
+const TYPES = ["grass","dirt","stone","cobble","sand","wood","leaves","plank","glass","coal_ore","iron_ore","gold_ore","diamond_ore","water","lava","farmland","wheat","torch","crafting_table","furnace","chest","rail","powered_rail","wire","lamp","portal","obsidian","snow","ice","brick"];
+const DIMENSIONS = ["overworld","ember","void"];
+const k=(x,y,z)=>`${x},${y},${z}`;
 
-const hasDatabase = !!process.env.DATABASE_URL;
-const db = hasDatabase ? new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized:false } : undefined
-}) : null;
-
-function cleanInventory(obj){
-  const out = {};
-  if(!obj || typeof obj !== 'object' || Array.isArray(obj)) return out;
-  for(const [id,count] of Object.entries(obj)){
-    const n = Math.max(0, Math.min(9999, Math.floor(Number(count)||0)));
-    out[String(id).slice(0,12)] = n;
-  }
-  return out;
+function noise(x,z,s=0){
+  return Math.sin((x+s)*.16)*2 + Math.cos((z-s)*.13)*1.7 + Math.sin((x+z+s)*.07)*1.2;
+}
+function defaultPlayer(name){
+  return {
+    name, dimension:"overworld", pos:[0,8,0], yaw:0,pitch:0,
+    health:20,hunger:20,armor:0,xp:0,level:0,
+    inventory:{grass:20,dirt:20,cobble:10,wood:6,apple:3,torch:4},
+    hotbar:["grass","dirt","cobble","wood","torch","wood_pickaxe","wood_sword","bow","apple"],
+    equipment:{head:null,chest:null,legs:null,feet:null},
+    effects:[], achievements:[], spawn:{dimension:"overworld",pos:[0,8,0]}
+  };
 }
 
-function cleanToolState(obj){
-  const out = {};
-  if(!obj || typeof obj !== 'object' || Array.isArray(obj)) return out;
-  for(const [id,d] of Object.entries(obj)){
-    const n = Math.max(0, Math.min(1000, Math.floor(Number(d)||0)));
-    out[String(id).slice(0,12)] = n;
-  }
-  return out;
+function newState(){
+  return {
+    version:3, seed:Math.floor(Math.random()*999999),
+    dimensions:{overworld:{blocks:{},time:.22,weather:"clear"},ember:{blocks:{},time:.65,weather:"ash"},void:{blocks:{},time:.82,weather:"clear"}},
+    players:{}, containers:{}, furnaces:{}, crops:{}, entities:{}, structuresGenerated:{}, boss:{},
+    automation:{}, achievementsGlobal:[]
+  };
 }
+let state = newState();
+try{ if(fs.existsSync(SAVE)) state = JSON.parse(fs.readFileSync(SAVE,"utf8")); }catch(e){ console.error("save load",e); }
 
-async function initDatabase(){
-  if(!db){
-    console.warn('DATABASE_URL not set. Persistence is memory-only.');
-    return;
-  }
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS worlds (
-      code VARCHAR(10) PRIMARY KEY,
-      world_data JSONB NOT NULL,
-      surface_data JSONB NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await db.query(`ALTER TABLE worlds ADD COLUMN IF NOT EXISTS entities_data JSONB NOT NULL DEFAULT '{}'::jsonb`);
-  await db.query(`ALTER TABLE worlds ADD COLUMN IF NOT EXISTS owner_name VARCHAR(32)`);
-  await db.query(`ALTER TABLE worlds ADD COLUMN IF NOT EXISTS settings_data JSONB NOT NULL DEFAULT '{}'::jsonb`);
-  await db.query(`ALTER TABLE worlds ADD COLUMN IF NOT EXISTS spawn_data JSONB NOT NULL DEFAULT '{}'::jsonb`);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS player_saves (
-      world_code VARCHAR(10) NOT NULL REFERENCES worlds(code) ON DELETE CASCADE,
-      player_name VARCHAR(32) NOT NULL,
-      x DOUBLE PRECISION,
-      y DOUBLE PRECISION,
-      health DOUBLE PRECISION,
-      hunger DOUBLE PRECISION,
-      inventory JSONB NOT NULL DEFAULT '{}'::jsonb,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (world_code, player_name)
-    )
-  `);
-
-  await db.query(`ALTER TABLE player_saves ADD COLUMN IF NOT EXISTS spawn_x DOUBLE PRECISION`);
-  await db.query(`ALTER TABLE player_saves ADD COLUMN IF NOT EXISTS spawn_y DOUBLE PRECISION`);
-  await db.query(`ALTER TABLE player_saves ADD COLUMN IF NOT EXISTS tool_state JSONB NOT NULL DEFAULT '{}'::jsonb`);
-  await db.query(`ALTER TABLE player_saves ADD COLUMN IF NOT EXISTS hotbar_data JSONB NOT NULL DEFAULT '[]'::jsonb`);
-
-  console.log('PostgreSQL persistence ready.');
+function setBlock(dim,x,y,z,type){
+  const b=state.dimensions[dim].blocks;
+  const key=k(x,y,z);
+  if(type==null) delete b[key]; else b[key]=type;
 }
+function getBlock(dim,x,y,z){ return state.dimensions[dim].blocks[k(x,y,z)] || null; }
 
-function hash(x,y=0){
-  let n=(x*374761393+y*668265263)^(x<<13);
-  n=(n*(n*n*15731+789221)+1376312589);
-  return ((n>>>0)%100000)/100000;
-}
-function smoothNoise(x){
-  const i=Math.floor(x),f=x-i,a=hash(i),b=hash(i+1),s=f*f*(3-2*f);
-  return a+(b-a)*s;
-}
-
-function biomeAt(x){
-  const n=smoothNoise(x/32);
-  if(n<.18) return 'desert';
-  if(n<.36) return 'plains';
-  if(n<.58) return 'forest';
-  if(n<.76) return 'snow';
-  return 'mountain';
-}
-
-function generateWorld(){
-  const world=Array.from({length:WORLD_H},()=>Array(WORLD_W).fill(T.AIR));
-  const surface=Array(WORLD_W).fill(0);
-  const waterLevel=45;
-
-  for(let x=0;x<WORLD_W;x++){
-    const biome=biomeAt(x);
-    let h=38+(smoothNoise(x/13)-.5)*10+Math.sin(x/18)*2;
-    if(biome==='mountain') h-=8+(smoothNoise(x/6))*9;
-    if(biome==='desert') h+=2;
-    if(biome==='plains') h+=1;
-    h=Math.max(17,Math.min(54,Math.floor(h)));
-    surface[x]=h;
-
-    for(let y=h;y<WORLD_H;y++){
-      const depth=y-h;
-      if(depth===0){
-        if(biome==='desert') world[y][x]=T.SAND;
-        else if(biome==='snow') world[y][x]=T.SNOW;
-        else world[y][x]=T.GRASS;
-      }else if(depth<4){
-        world[y][x]=biome==='desert'?T.SAND:T.DIRT;
-      }else{
-        world[y][x]=T.STONE;
-        const r=hash(x,y);
-        if(y>h+6 && r>.963) world[y][x]=T.COAL;
-        if(y>h+13 && r<.020) world[y][x]=T.IRON;
+function generateDimension(dim){
+  const d=state.dimensions[dim];
+  if(Object.keys(d.blocks).length) return;
+  const R=34;
+  if(dim==="overworld"){
+    for(let x=-R;x<=R;x++) for(let z=-R;z<=R;z++){
+      let h=Math.floor(3+noise(x,z,state.seed%100));
+      for(let y=-4;y<=h;y++){
+        let t=y===h?(h<=1?"sand":h>=6?"snow":"grass"):y>=h-2?"dirt":"stone";
+        if(y<-1 && Math.sin(x*.6+y*.8+z*.5)>1.65) continue;
+        if(y<h-3){
+          const r=Math.abs(Math.sin(x*12.9898+z*78.233+y*37.719));
+          if(r>.985)t="diamond_ore"; else if(r>.955)t="gold_ore"; else if(r>.90)t="iron_ore"; else if(r>.83)t="coal_ore";
+        }
+        setBlock(dim,x,y,z,t);
+      }
+      if(Math.random()<.018 && h>2 && Math.abs(x)>4 && Math.abs(z)>4){
+        for(let y=1;y<=4;y++) setBlock(dim,x,h+y,z,"wood");
+        for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)for(let dy=3;dy<=5;dy++) if(Math.abs(dx)+Math.abs(dz)<4)setBlock(dim,x+dx,h+dy,z+dz,"leaves");
       }
     }
-
-    if(h>waterLevel){
-      for(let y=waterLevel;y<h;y++) world[y][x]=T.WATER;
-      world[h][x]=T.SAND;
-      if(h+1<WORLD_H) world[h+1][x]=T.SAND;
-    }else if(Math.abs(h-waterLevel)<=2){
-      world[h][x]=T.SAND;
+  } else if(dim==="ember"){
+    for(let x=-R;x<=R;x++)for(let z=-R;z<=R;z++){
+      const h=Math.floor(1+noise(x,z,55)*.6);
+      for(let y=-4;y<=h;y++) setBlock(dim,x,y,z, y===h?"brick":"stone");
+      if(Math.random()<.03) setBlock(dim,x,h+1,z,"lava");
+    }
+  } else {
+    for(let x=-R;x<=R;x++)for(let z=-R;z<=R;z++){
+      if(Math.hypot(x,z)<20 && noise(x,z,99)>-.3){
+        let h=Math.floor(noise(x,z,99)*.25);
+        for(let y=-2;y<=h;y++) setBlock(dim,x,y,z,y===h?"obsidian":"stone");
+      }
     }
   }
+}
+DIMENSIONS.forEach(generateDimension);
 
-  // caves
-  for(let i=0;i<125;i++){
-    const cx=7+hash(i,901)*(WORLD_W-14);
-    const cy=48+hash(i,902)*31;
-    const r=2+hash(i,903)*4.8;
-    for(let y=Math.floor(cy-r);y<=Math.ceil(cy+r);y++){
-      for(let x=Math.floor(cx-r*1.7);x<=Math.ceil(cx+r*1.7);x++){
-        if(x>1&&x<WORLD_W-1&&y>0&&y<WORLD_H &&
-          ((x-cx)**2/(r*r*2.5)+(y-cy)**2/(r*r)<1)){
-          world[y][x]=T.AIR;
+function generateStructures(){
+  if(state.structuresGenerated.overworld) return;
+  const dim="overworld";
+  const villages=[[-18,-12],[17,15]];
+  for(const [cx,cz] of villages){
+    for(let h=0;h<3;h++){
+      const bx=cx+h*7, bz=cz+(h%2)*6;
+      let gy=0; for(let y=20;y>-10;y--) if(getBlock(dim,bx,y,bz)){gy=y+1;break;}
+      for(let x=bx-2;x<=bx+2;x++)for(let z=bz-2;z<=bz+2;z++){
+        setBlock(dim,x,gy-1,z,"plank");
+        if(x===bx-2||x===bx+2||z===bz-2||z===bz+2){
+          for(let y=gy;y<=gy+2;y++)setBlock(dim,x,y,z,"wood");
         }
       }
+      for(let x=bx-3;x<=bx+3;x++)for(let z=bz-3;z<=bz+3;z++)setBlock(dim,x,gy+3,z,"plank");
+      setBlock(dim,bx,gy,bz-2,null);
+      entity("villager",{dimension:dim,pos:[bx,gy+1,bz],health:20,profession:["farmer","smith","fisher"][h%3],ai:"village"});
+    }
+    // central lamp/well
+    let gy=0;for(let y=20;y>-10;y--)if(getBlock(dim,cx,y,cz)){gy=y+1;break;}
+    setBlock(dim,cx,gy-1,cz,"stone");setBlock(dim,cx,gy,cz,"water");
+    setBlock(dim,cx+2,gy,cz,"torch");
+  }
+  state.structuresGenerated.overworld=true;
+}
+
+generateStructures();
+
+function addItem(p,type,count=1){
+  p.inventory[type]=(p.inventory[type]||0)+count;
+}
+function takeItem(p,type,count=1){
+  if((p.inventory[type]||0)<count) return false;
+  p.inventory[type]-=count;
+  if(p.inventory[type]<=0) delete p.inventory[type];
+  return true;
+}
+function entity(type,data={}){
+  const id="e"+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+  state.entities[id]={id,type,...data};
+  return state.entities[id];
+}
+function save(){ try{ fs.writeFileSync(SAVE,JSON.stringify(state)); }catch(e){ console.error("save",e); } }
+setInterval(save,5000);
+process.on("SIGTERM",()=>{save();process.exit(0)});
+process.on("SIGINT",()=>{save();process.exit(0)});
+
+const online = new Map();
+
+function publicPlayer(p,id){ return {id,name:p.name,dimension:p.dimension,pos:p.pos,yaw:p.yaw,pitch:p.pitch,equipment:p.equipment,health:p.health}; }
+
+io.on("connection", socket=>{
+  socket.on("join", ({username})=>{
+    username=String(username||"").trim().replace(/[^\w\-]/g,"").slice(0,16);
+    if(username.length<2) return socket.emit("joinError","Use at least 2 letters/numbers.");
+    if([...online.values()].includes(username)) return socket.emit("joinError","That username is already online.");
+    if(!state.players[username]) state.players[username]=defaultPlayer(username);
+    const p=state.players[username]; online.set(socket.id,username);
+    socket.join(p.dimension);
+    socket.emit("init", {self:p, dimensions:state.dimensions, entities:state.entities, containers:state.containers, furnaces:state.furnaces, crops:state.crops, automation:state.automation,
+      players:[...online.entries()].filter(([id])=>id!==socket.id).map(([id,n])=>publicPlayer(state.players[n],id))});
+    socket.to(p.dimension).emit("playerJoin",publicPlayer(p,socket.id));
+    io.to(p.dimension).emit("systemChat",`${username} joined the world`);
+  });
+
+  socket.on("move", d=>{
+    const n=online.get(socket.id); if(!n)return; const p=state.players[n];
+    if(!Array.isArray(d.pos)||d.pos.some(v=>!Number.isFinite(v)))return;
+    p.pos=d.pos.map(v=>Math.max(-200,Math.min(200,v))); p.yaw=+d.yaw||0;p.pitch=+d.pitch||0;
+    socket.to(p.dimension).volatile.emit("playerMove",{id:socket.id,pos:p.pos,yaw:p.yaw,pitch:p.pitch});
+  });
+
+  socket.on("chat", text=>{
+    const n=online.get(socket.id);if(!n)return; text=String(text||"").trim().slice(0,120);if(!text)return;
+    const p=state.players[n]; io.to(p.dimension).emit("chat",{id:socket.id,name:n,text});
+  });
+
+  socket.on("block", d=>{
+    const n=online.get(socket.id);if(!n)return; const p=state.players[n];
+    const {x,y,z}=d; if(![x,y,z].every(Number.isInteger)||Math.abs(x)>100||Math.abs(z)>100||y<-20||y>40)return;
+    if(d.action==="break"){
+      const t=getBlock(p.dimension,x,y,z); if(!t)return;
+      setBlock(p.dimension,x,y,z,null);
+      if(!["water","lava","portal"].includes(t)) entity("drop",{dimension:p.dimension,pos:[x,y+.2,z],item:t,count:1,age:0});
+      io.to(p.dimension).emit("blockUpdate",{x,y,z,type:null});
+      io.to(p.dimension).emit("entitySync",state.entities);
+    }else if(d.action==="place" && TYPES.includes(d.type)){
+      if(getBlock(p.dimension,x,y,z))return;
+      if(!takeItem(p,d.type,1))return;
+      setBlock(p.dimension,x,y,z,d.type);
+      io.to(p.dimension).emit("blockUpdate",{x,y,z,type:d.type});
+      socket.emit("playerState",p);
+    }
+  });
+
+  socket.on("dropItem", ({item,count=1})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    count=Math.max(1,Math.min(64,Math.floor(count)));
+    if(!takeItem(p,item,count))return;
+    entity("drop",{dimension:p.dimension,pos:[p.pos[0],p.pos[1],p.pos[2]],item,count,age:0});
+    io.to(p.dimension).emit("entitySync",state.entities);socket.emit("playerState",p);
+  });
+
+  socket.on("pickup", ({id})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n],e=state.entities[id];
+    if(!e||e.type!=="drop"||e.dimension!==p.dimension)return;
+    const dx=e.pos[0]-p.pos[0],dy=e.pos[1]-p.pos[1],dz=e.pos[2]-p.pos[2];
+    if(dx*dx+dy*dy+dz*dz>9)return;
+    addItem(p,e.item,e.count);delete state.entities[id];
+    socket.emit("playerState",p);io.to(p.dimension).emit("entitySync",state.entities);
+  });
+
+  socket.on("craft", ({recipe})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    const recipes={
+      plank:{need:{wood:1},give:{plank:4}},
+      crafting_table:{need:{plank:4},give:{crafting_table:1}},
+      chest:{need:{plank:8},give:{chest:1}},
+      furnace:{need:{cobble:8},give:{furnace:1}},
+      torch:{need:{coal_ore:1,wood:1},give:{torch:4}},
+      wood_pickaxe:{need:{plank:3,wood:2},give:{wood_pickaxe:1}},
+      stone_pickaxe:{need:{cobble:3,wood:2},give:{stone_pickaxe:1}},
+      iron_pickaxe:{need:{iron_ingot:3,wood:2},give:{iron_pickaxe:1}},
+      wood_sword:{need:{plank:2,wood:1},give:{wood_sword:1}},
+      bow:{need:{wood:3,string:3},give:{bow:1}},
+      arrow:{need:{stone:1,wood:1},give:{arrow:4}},
+      rail:{need:{iron_ingot:2,wood:1},give:{rail:8}},
+      powered_rail:{need:{gold_ingot:2,wire:1},give:{powered_rail:4}},
+      wire:{need:{iron_ingot:1,coal_ore:1},give:{wire:4}},
+      lamp:{need:{glass:1,wire:1,torch:1},give:{lamp:1}},
+      obsidian:{need:{stone:4,coal_ore:2},give:{obsidian:1}},
+      portal:{need:{obsidian:8,diamond:1},give:{portal:1}},
+      boat:{need:{plank:5},give:{boat:1}},
+      minecart:{need:{iron_ingot:5},give:{minecart:1}},
+      fishing_rod:{need:{wood:3,string:2},give:{fishing_rod:1}},
+      leather_helmet:{need:{leather:5},give:{leather_helmet:1}},
+      leather_chest:{need:{leather:8},give:{leather_chest:1}},
+      healing_potion:{need:{apple:1,glass:1},give:{healing_potion:1}}
+    };
+    const r=recipes[recipe]; if(!r)return;
+    for(const [i,c] of Object.entries(r.need)) if((p.inventory[i]||0)<c)return;
+    for(const [i,c] of Object.entries(r.need)) takeItem(p,i,c);
+    for(const [i,c] of Object.entries(r.give)) addItem(p,i,c);
+    socket.emit("playerState",p);
+  });
+
+  socket.on("openContainer", ({x,y,z})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n],id=`${p.dimension}:${k(x,y,z)}`;
+    if(getBlock(p.dimension,x,y,z)==="chest"){
+      if(!state.containers[id])state.containers[id]={slots:{}};
+      socket.emit("containerData",{kind:"chest",id,data:state.containers[id]});
+    }else if(getBlock(p.dimension,x,y,z)==="furnace"){
+      if(!state.furnaces[id])state.furnaces[id]={input:null,inputCount:0,fuel:0,output:null,outputCount:0,progress:0};
+      socket.emit("containerData",{kind:"furnace",id,data:state.furnaces[id]});
+    }
+  });
+
+  socket.on("containerTransfer", d=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(d.kind==="chest"){
+      const c=state.containers[d.id];if(!c)return;
+      if(d.dir==="in" && takeItem(p,d.item,1)) c.slots[d.item]=(c.slots[d.item]||0)+1;
+      if(d.dir==="out" && (c.slots[d.item]||0)>0){c.slots[d.item]--;addItem(p,d.item,1);if(c.slots[d.item]<=0)delete c.slots[d.item];}
+      socket.emit("containerData",{kind:"chest",id:d.id,data:c});socket.emit("playerState",p);
+    } else if(d.kind==="furnace"){
+      const f=state.furnaces[d.id];if(!f)return;
+      if(d.dir==="input" && takeItem(p,d.item,1)){if(!f.input||f.input===d.item){f.input=d.item;f.inputCount++;}else addItem(p,d.item,1);}
+      if(d.dir==="fuel" && takeItem(p,d.item,1)){f.fuel+=d.item==="coal_ore"?12:4;}
+      if(d.dir==="output" && f.outputCount>0){addItem(p,f.output,f.outputCount);f.outputCount=0;f.output=null;}
+      socket.emit("containerData",{kind:"furnace",id:d.id,data:f});socket.emit("playerState",p);
+    }
+  });
+
+  socket.on("plant", ({x,y,z})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(getBlock(p.dimension,x,y,z)!=="farmland"||getBlock(p.dimension,x,y+1,z))return;
+    if(!takeItem(p,"seed",1))return;
+    setBlock(p.dimension,x,y+1,z,"wheat");state.crops[`${p.dimension}:${k(x,y+1,z)}`]={stage:0};
+    io.to(p.dimension).emit("blockUpdate",{x,y:y+1,z,type:"wheat"});socket.emit("playerState",p);
+  });
+
+  socket.on("usePortal", ({target})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(!DIMENSIONS.includes(target))return;
+    socket.leave(p.dimension);p.dimension=target;p.pos=[0,8,0];socket.join(target);
+    socket.emit("dimensionChange",{dimension:target,blocks:state.dimensions[target].blocks,entities:state.entities});
+    socket.to(target).emit("playerJoin",publicPlayer(p,socket.id));
+  });
+
+  socket.on("equip", ({slot,item})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(!["head","chest","legs","feet"].includes(slot)||!item)return;
+    if(!takeItem(p,item,1))return;
+    if(p.equipment[slot])addItem(p,p.equipment[slot],1);
+    p.equipment[slot]=item;
+    p.armor=Object.values(p.equipment).filter(Boolean).length*2;
+    socket.emit("playerState",p);
+  });
+
+  socket.on("consume", ({item})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(!takeItem(p,item,1))return;
+    if(item==="apple")p.hunger=Math.min(20,p.hunger+4);
+    if(item==="healing_potion"){p.health=Math.min(20,p.health+8);p.effects.push({type:"regen",until:Date.now()+10000});}
+    socket.emit("playerState",p);
+  });
+
+  socket.on("attack", ({entityId,damage=2})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n],e=state.entities[entityId];if(!e)return;
+    const dx=e.pos[0]-p.pos[0],dy=e.pos[1]-p.pos[1],dz=e.pos[2]-p.pos[2];if(dx*dx+dy*dy+dz*dz>36)return;
+    e.health=(e.health||10)-Math.max(1,Math.min(10,damage));
+    if(e.health<=0){
+      if(e.type==="cow"){entity("drop",{dimension:e.dimension,pos:e.pos,item:"leather",count:1,age:0});entity("drop",{dimension:e.dimension,pos:e.pos,item:"meat",count:2,age:0});}
+      if(e.type==="sheep")entity("drop",{dimension:e.dimension,pos:e.pos,item:"wool",count:2,age:0});
+      if(e.type==="hostile")entity("drop",{dimension:e.dimension,pos:e.pos,item:"string",count:1,age:0});
+      if(e.type==="boss"){entity("drop",{dimension:e.dimension,pos:e.pos,item:"boss_core",count:1,age:0});p.achievements.push("boss_slayer");}
+      delete state.entities[entityId]; p.xp+=5; while(p.xp >= (p.level+1)*10){p.xp-=(p.level+1)*10;p.level++;}
+    }
+    io.to(p.dimension).emit("entitySync",state.entities);socket.emit("playerState",p);
+  });
+
+  socket.on("shoot", ({dir})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(!takeItem(p,"arrow",1))return;
+    entity("projectile",{dimension:p.dimension,pos:[...p.pos],vel:dir.map(v=>v*12),owner:n,age:0});
+    io.to(p.dimension).emit("entitySync",state.entities);socket.emit("playerState",p);
+  });
+
+  socket.on("spawnVehicle", ({type})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(!["boat","minecart"].includes(type)||!takeItem(p,type,1))return;
+    entity(type,{dimension:p.dimension,pos:[...p.pos],health:10});
+    io.to(p.dimension).emit("entitySync",state.entities);socket.emit("playerState",p);
+  });
+
+
+  socket.on("enchant", ({item})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if((p.inventory[item]||0)<1 || p.level<1)return;
+    p.level--; p.inventory[item]--; const enchanted=`enchanted_${item}`;addItem(p,enchanted,1);
+    socket.emit("playerState",p);
+  });
+
+  socket.on("vehicleMove", ({id,pos})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n],e=state.entities[id];
+    if(!e||!["boat","minecart"].includes(e.type)||e.dimension!==p.dimension||!Array.isArray(pos)||pos.length!==3)return;
+    const dx=e.pos[0]-p.pos[0],dz=e.pos[2]-p.pos[2];if(dx*dx+dz*dz>36)return;
+    e.pos=pos.map(v=>Math.max(-200,Math.min(200,+v||0)));
+  });
+
+  socket.on("achievement", ({id})=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    if(!p.achievements.includes(id)){p.achievements.push(id);socket.emit("achievementUnlocked",id);}
+  });
+
+  socket.on("disconnect", ()=>{
+    const n=online.get(socket.id);if(!n)return;const p=state.players[n];
+    online.delete(socket.id);io.to(p.dimension).emit("playerLeave",{id:socket.id});io.to(p.dimension).emit("systemChat",`${n} left the world`);
+  });
+});
+
+function sim(){
+  const now=Date.now();
+  for(const dim of DIMENSIONS){
+    const d=state.dimensions[dim];
+    d.time=(d.time+.00035)%1;
+    if(dim==="overworld" && Math.random()<.0015)d.weather=Math.random()<.65?"rain":Math.random()<.5?"storm":"clear";
+    if(dim==="overworld" && Math.random()<.006)d.weather="clear";
+  }
+
+  // crops
+  for(const [id,c] of Object.entries(state.crops)){
+    if(Math.random()<.04)c.stage=Math.min(7,c.stage+1);
+  }
+
+  // furnaces
+  for(const f of Object.values(state.furnaces)){
+    const smelt={iron_ore:"iron_ingot",gold_ore:"gold_ingot",sand:"glass",meat:"cooked_meat"};
+    if(f.input && f.fuel>0 && smelt[f.input]){
+      f.progress+=1; f.fuel-=.08;
+      if(f.progress>=100){f.output=smelt[f.input];f.outputCount++;f.inputCount--;if(f.inputCount<=0){f.input=null;f.inputCount=0}f.progress=0;}
     }
   }
 
-  // vegetation
-  for(let x=4;x<WORLD_W-4;x++){
-    const biome=biomeAt(x);
-    const sy=surface[x];
-    if(biome==='desert' && hash(x,400)>.91 && world[sy][x]===T.SAND){
-      const h=2+(hash(x,401)>.55?1:0);
-      for(let j=1;j<=h;j++) if(sy-j>=0) world[sy-j][x]=T.CACTUS;
-      continue;
+  // spawn animals/hostiles/boss
+  for(const dim of DIMENSIONS){
+    const players=[...online.values()].map(n=>state.players[n]).filter(p=>p.dimension===dim);
+    if(!players.length)continue;
+    const count=Object.values(state.entities).filter(e=>e.dimension===dim).length;
+    if(count<32 && Math.random()<.08){
+      const p=players[Math.floor(Math.random()*players.length)], a=Math.random()*Math.PI*2,r=10+Math.random()*14;
+      const type = dim==="overworld" ? (state.dimensions[dim].time>.55 && state.dimensions[dim].time<.95 ? "hostile" : Math.random()<.5?"cow":"sheep") : "hostile";
+      entity(type,{dimension:dim,pos:[p.pos[0]+Math.cos(a)*r,5,p.pos[2]+Math.sin(a)*r],health:type==="hostile"?12:10,ai:"wander"});
     }
+    if(dim==="void" && !Object.values(state.entities).some(e=>e.type==="boss"&&e.dimension==="void")){
+      entity("boss",{dimension:"void",pos:[0,8,-18],health:180,ai:"boss"});
+    }
+  }
 
-    const chance=biome==='forest'?.78:biome==='plains'?.92:biome==='snow'?.88:1;
-    if(hash(x,888)>chance && sy<46 && [T.GRASS,T.SNOW].includes(world[sy][x])){
-      const th=4+(hash(x,1234)>.5?1:0);
-      for(let y=sy-1;y>=sy-th;y--) if(y>=0) world[y][x]=T.WOOD;
-      for(let yy=sy-th-2;yy<=sy-th+1;yy++){
-        for(let xx=x-2;xx<=x+2;xx++){
-          if(xx>=0&&xx<WORLD_W&&yy>=0 &&
-             Math.abs(xx-x)+Math.abs(yy-(sy-th))<4 &&
-             world[yy][xx]===T.AIR){
-            world[yy][xx]=T.LEAF;
+  // entities
+  for(const e of Object.values(state.entities)){
+    e.age=(e.age||0)+.1;
+    if(e.type==="drop"){
+      e.pos[1]=Math.max(1,e.pos[1]-.04);
+      if(e.age>900) delete state.entities[e.id];
+    }
+    if(e.type==="projectile"){
+      e.pos[0]+=e.vel[0]*.1;e.pos[1]+=e.vel[1]*.1;e.pos[2]+=e.vel[2]*.1;e.vel[1]-=.5;
+      for(const other of Object.values(state.entities)){
+        if(other===e||!other.health||other.dimension!==e.dimension)continue;
+        const dx=other.pos[0]-e.pos[0],dy=other.pos[1]-e.pos[1],dz=other.pos[2]-e.pos[2];
+        if(dx*dx+dy*dy+dz*dz<1.2){other.health-=5;delete state.entities[e.id];if(other.health<=0)delete state.entities[other.id];break;}
+      }
+      if(e.age>8)delete state.entities[e.id];
+    }
+    if(["cow","sheep","hostile","boss","villager"].includes(e.type)){
+      const candidates=[...online.values()].map(n=>state.players[n]).filter(p=>p.dimension===e.dimension);
+      if(!candidates.length)continue;
+      let target=candidates[0],best=1e9;
+      for(const p of candidates){const dx=p.pos[0]-e.pos[0],dz=p.pos[2]-e.pos[2],d=dx*dx+dz*dz;if(d<best){best=d;target=p}}
+      if(e.type==="villager"){
+        e.pos[0]+=Math.sin(now/1800+e.pos[2])*.01;e.pos[2]+=Math.cos(now/1700+e.pos[0])*.01;
+      } else if(e.type==="hostile"||e.type==="boss"){
+        const d=Math.sqrt(best)||1,s=e.type==="boss"?.12:.07;e.pos[0]+=(target.pos[0]-e.pos[0])/d*s;e.pos[2]+=(target.pos[2]-e.pos[2])/d*s;
+        if(d<1.5){target.health=Math.max(0,target.health-(e.type==="boss"?.5:.18));}
+      }else{
+        e.pos[0]+=Math.sin(now/1000+e.pos[2])*.015;e.pos[2]+=Math.cos(now/1300+e.pos[0])*.015;
+      }
+    }
+  }
+
+  // players passive sim
+  for(const n of online.values()){
+    const p=state.players[n];
+    p.hunger=Math.max(0,p.hunger-.002);
+    if(p.hunger<=0)p.health=Math.max(0,p.health-.02);
+    if(p.health<=0){p.health=20;p.hunger=20;p.dimension=p.spawn.dimension;p.pos=[...p.spawn.pos];}
+  }
+
+
+  // compact fluid simulation: exposed water/lava slowly spreads horizontally/downward.
+  if(Math.random()<.35){
+    for(const dim of DIMENSIONS){
+      const b=state.dimensions[dim].blocks;
+      let processed=0;
+      for(const [kk,type] of Object.entries(b)){
+        if(processed++>120)break;
+        if(type!=="water"&&type!=="lava")continue;
+        const [x,y,z]=kk.split(",").map(Number);
+        const candidates=[[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]];
+        for(const [dx,dy,dz] of candidates){
+          if(Math.random()>.08)continue;
+          const nx=x+dx,ny=y+dy,nz=z+dz;
+          if(!getBlock(dim,nx,ny,nz)){
+            setBlock(dim,nx,ny,nz,type);
+            io.to(dim).emit("blockUpdate",{x:nx,y:ny,z:nz,type});
+            break;
           }
         }
       }
     }
   }
 
-  return {world,surface};
-}
-
-function groundY(room, px){
-  const tx=Math.max(0,Math.min(WORLD_W-1,Math.floor(px/TILE)));
-  return room.surface[tx]*TILE;
-}
-
-function makePassiveMob(room, type, x){
-  const defs={
-    pig:{hp:4,w:22,h:14},
-    cow:{hp:6,w:24,h:17},
-    sheep:{hp:5,w:23,h:16}
-  };
-  const d=defs[type];
-  return {
-    id:'m'+Math.random().toString(36).slice(2,10),
-    type, hostile:false, x, y:groundY(room,x)-d.h/2-1,
-    vx:(Math.random()<.5?-1:1)*(12+Math.random()*18),
-    hp:d.hp,maxHp:d.hp,w:d.w,h:d.h,wander:1+Math.random()*4,hurt:0,attackCd:0
-  };
-}
-
-function makeHostileMob(room,type,x){
-  const defs={
-    zombie:{hp:8,w:18,h:28,speed:42,damage:2},
-    slime:{hp:5,w:20,h:15,speed:55,damage:1}
-  };
-  const d=defs[type];
-  return {
-    id:'m'+Math.random().toString(36).slice(2,10),
-    type, hostile:true, x, y:groundY(room,x)-d.h/2-1,
-    vx:0,hp:d.hp,maxHp:d.hp,w:d.w,h:d.h,speed:d.speed,damage:d.damage,
-    wander:0,hurt:0,attackCd:0
-  };
-}
-
-function seedPassiveMobs(room){
-  const mobs={};
-  for(let i=0;i<18;i++){
-    const tx=8+Math.floor(hash(i,777)*(WORLD_W-16));
-    const x=(tx+.5)*TILE;
-    const type=['pig','cow','sheep'][i%3];
-    const m=makePassiveMob(room,type,x);
-    mobs[m.id]=m;
-  }
-  return mobs;
-}
-
-async function codeExists(code){
-  if(rooms.has(code)) return true;
-  if(!db) return false;
-  const r=await db.query('SELECT 1 FROM worlds WHERE code=$1 LIMIT 1',[code]);
-  return r.rowCount>0;
-}
-async function roomCode(){
-  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  for(let tries=0;tries<100;tries++){
-    const c=Array.from({length:4},()=>chars[Math.floor(Math.random()*chars.length)]).join('');
-    if(!(await codeExists(c))) return c;
-  }
-  throw new Error('Unable to allocate room code');
-}
-
-function serializeEntities(room){
-  return {
-    drops:room.drops,
-    mobs:room.mobs,
-    chests:room.chests,
-    furnaces:room.furnaces,
-    beds:room.beds,
-    timeOfDay:room.timeOfDay
-  };
-}
-
-async function saveWorld(room){
-  if(!db||!room) return;
-  await db.query(`
-    INSERT INTO worlds(code,world_data,surface_data,entities_data,owner_name,settings_data,spawn_data,updated_at)
-    VALUES($1,$2::jsonb,$3::jsonb,$4::jsonb,$5,$6::jsonb,$7::jsonb,NOW())
-    ON CONFLICT(code) DO UPDATE SET
-      world_data=EXCLUDED.world_data,
-      surface_data=EXCLUDED.surface_data,
-      entities_data=EXCLUDED.entities_data,
-      owner_name=EXCLUDED.owner_name,
-      settings_data=EXCLUDED.settings_data,
-      spawn_data=EXCLUDED.spawn_data,
-      updated_at=NOW()
-  `,[
-    room.code,JSON.stringify(room.world),JSON.stringify(room.surface),
-    JSON.stringify(serializeEntities(room)),room.ownerName,
-    JSON.stringify(room.settings),JSON.stringify(room.spawn)
-  ]);
-  room.dirty=false;
-  room.lastSaved=Date.now();
-}
-
-async function makeRoom(ownerName){
-  const code=await roomCode();
-  const gen=generateWorld();
-  const spawnTx=12;
-  const room={
-    code,world:gen.world,surface:gen.surface,players:{},
-    ownerName:String(ownerName||'Player').slice(0,16),
-    settings:{pvp:false},
-    spawn:{x:(spawnTx+.5)*TILE,y:(gen.surface[spawnTx]-2)*TILE},
-    drops:{},mobs:{},chests:{},furnaces:{},beds:{},
-    timeOfDay:.23,dirty:true,lastSaved:0,lastMobBroadcast:0,lastTimeBroadcast:0,lastHostileSpawn:0
-  };
-  room.mobs=seedPassiveMobs(room);
-  rooms.set(code,room);
-  await saveWorld(room);
-  return room;
-}
-
-async function loadRoom(code){
-  if(rooms.has(code)) return rooms.get(code);
-  if(!db) return null;
-  const q=await db.query(`
-    SELECT code,world_data,surface_data,entities_data,owner_name,settings_data,spawn_data
-    FROM worlds WHERE code=$1 LIMIT 1
-  `,[code]);
-  if(!q.rowCount) return null;
-  const row=q.rows[0], e=row.entities_data||{};
-  const surface=row.surface_data;
-  const room={
-    code:row.code,world:row.world_data,surface,players:{},
-    ownerName:row.owner_name||'Player',
-    settings:Object.assign({pvp:false},row.settings_data||{}),
-    spawn:Object.assign({x:12.5*TILE,y:(surface[12]-2)*TILE},row.spawn_data||{}),
-    drops:e.drops||{},mobs:e.mobs||{},chests:e.chests||{},furnaces:e.furnaces||{},beds:e.beds||{},
-    timeOfDay:Number.isFinite(e.timeOfDay)?e.timeOfDay:.23,
-    dirty:false,lastSaved:Date.now(),lastMobBroadcast:0,lastTimeBroadcast:0,lastHostileSpawn:0
-  };
-  rooms.set(code,room);
-  console.log(`Loaded world ${code}`);
-  return room;
-}
-
-async function loadPlayerSave(code,name){
-  if(!db) return null;
-  const q=await db.query(`
-    SELECT x,y,health,hunger,inventory,spawn_x,spawn_y,tool_state,hotbar_data
-    FROM player_saves WHERE world_code=$1 AND player_name=$2 LIMIT 1
-  `,[code,name]);
-  return q.rowCount?q.rows[0]:null;
-}
-async function savePlayer(room,p){
-  if(!db||!room||!p) return;
-  await db.query(`
-    INSERT INTO player_saves(world_code,player_name,x,y,health,hunger,inventory,spawn_x,spawn_y,tool_state,hotbar_data,updated_at)
-    VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10::jsonb,$11::jsonb,NOW())
-    ON CONFLICT(world_code,player_name) DO UPDATE SET
-      x=EXCLUDED.x,y=EXCLUDED.y,health=EXCLUDED.health,hunger=EXCLUDED.hunger,
-      inventory=EXCLUDED.inventory,spawn_x=EXCLUDED.spawn_x,spawn_y=EXCLUDED.spawn_y,
-      tool_state=EXCLUDED.tool_state,hotbar_data=EXCLUDED.hotbar_data,updated_at=NOW()
-  `,[
-    room.code,p.name,p.x,p.y,p.health,p.hunger,JSON.stringify(p.inventory||{}),
-    p.spawnX,p.spawnY,JSON.stringify(p.toolState||{}),JSON.stringify(p.hotbar||[])
-  ]);
-  p.lastPersisted=Date.now();
-}
-
-function publicPlayer(p){
-  return {id:p.id,name:p.name,x:p.x,y:p.y,vx:p.vx||0,vy:p.vy||0,dir:p.dir||1,
-    health:p.health,hunger:p.hunger,sleeping:!!p.sleeping};
-}
-function publicPlayers(room){
-  const o={}; for(const [id,p] of Object.entries(room.players)) o[id]=publicPlayer(p); return o;
-}
-function broadcastPlayerList(room){
-  io.to(room.code).emit('playerList',{
-    ownerName:room.ownerName,
-    players:Object.values(room.players).map(p=>({id:p.id,name:p.name,health:p.health,hunger:p.hunger}))
-  });
-}
-
-async function joinRoom(socket,room,name){
-  const safeName=String(name||'Player').trim().slice(0,16)||'Player';
-  const saved=await loadPlayerSave(room.code,safeName);
-  const p={
-    id:socket.id,name:safeName,
-    x:saved?.x ?? room.spawn.x,y:saved?.y ?? room.spawn.y,
-    vx:0,vy:0,dir:1,
-    health:saved?.health ?? 10,hunger:saved?.hunger ?? 10,
-    inventory:cleanInventory(saved ? (saved.inventory||{}) : {[T.DIRT]:20,[T.WOOD]:6,[T.GRASS]:4}),
-    toolState:cleanToolState(saved?.tool_state||{}),
-    hotbar:Array.isArray(saved?.hotbar_data) && saved.hotbar_data.length===10
-      ? saved.hotbar_data.map(Number)
-      : [T.DIRT,T.STONE,T.WOOD,I.TORCH,I.WOOD_PICK,I.STONE_PICK,I.WOOD_SWORD,I.COOKED_MEAT,T.CHEST,T.BED],
-    spawnX:saved?.spawn_x ?? room.spawn.x,spawnY:saved?.spawn_y ?? room.spawn.y,
-    lastChatAt:0,lastPersisted:Date.now(),attackCd:0,sleeping:false
-  };
-  room.players[socket.id]=p;
-  socket.join(room.code);
-
-  socket.emit('roomJoined',{
-    room:room.code,world:room.world,surface:room.surface,players:publicPlayers(room),
-    ownerName:room.ownerName,settings:room.settings,worldSpawn:room.spawn,
-    drops:room.drops,mobs:room.mobs,chests:room.chests,furnaces:room.furnaces,beds:room.beds,
-    timeOfDay:room.timeOfDay,
-    playerState:{
-      x:p.x,y:p.y,health:p.health,hunger:p.hunger,inventory:p.inventory,
-      toolState:p.toolState,hotbar:p.hotbar,spawnX:p.spawnX,spawnY:p.spawnY
-    }
-  });
-
-  socket.to(room.code).emit('playerJoined',publicPlayer(p));
-  io.to(room.code).emit('chatMessage',{
-    playerId:null,name:'Server',message:`${p.name} joined the world.`,time:Date.now(),system:true
-  });
-  broadcastPlayerList(room);
-}
-
-function blockDrop(block){
-  if(block===T.TORCH) return I.TORCH;
-  return block;
-}
-
-function spawnDrop(room,item,qty,x,y,toolDurability=null){
-  if(!item||qty<=0) return;
-  const id='d'+Math.random().toString(36).slice(2,10);
-  const d={id,item:Number(item),qty:Math.floor(qty),x,y,vx:(Math.random()-.5)*55,vy:-60,
-    born:Date.now(),toolDurability};
-  room.drops[id]=d; room.dirty=true;
-  io.to(room.code).emit('dropSpawn',d);
-  return d;
-}
-
-function spillInventory(room,p,x,y){
-  for(const [id,count] of Object.entries(p.inventory||{})){
-    let left=Math.floor(Number(count)||0);
-    while(left>0){
-      const qty=Math.min(left,16);
-      const numericId=Number(id);
-      const dur=(left===Math.floor(Number(count)||0) && p.toolState && p.toolState[id]!=null) ? p.toolState[id] : null;
-      spawnDrop(room,numericId,qty,x+(Math.random()-.5)*20,y-8,dur);
-      left-=qty;
-    }
-  }
-}
-
-function emitInventory(p){
-  io.to(p.id).emit('inventorySnapshot',{inventory:p.inventory,toolState:p.toolState});
-}
-
-function killPlayer(room,p,reason='died'){
-  spillInventory(room,p,p.x,p.y);
-  p.inventory={};
-  p.toolState={};
-  p.health=10;p.hunger=8;
-  p.x=p.spawnX??room.spawn.x;p.y=p.spawnY??room.spawn.y;
-  p.vx=p.vy=0;p.sleeping=false;
-  io.to(p.id).emit('playerRespawn',{
-    reason,x:p.x,y:p.y,health:p.health,hunger:p.hunger,inventory:p.inventory,toolState:p.toolState
-  });
-  io.to(room.code).emit('chatMessage',{
-    playerId:null,name:'Server',message:`${p.name} ${reason}.`,time:Date.now(),system:true
-  });
-  io.to(room.code).emit('playerMove',publicPlayer(p));
-  room.dirty=true;
-}
-
-function mobLoot(room,mob){
-  if(mob.type==='pig') spawnDrop(room,I.RAW_MEAT,2,mob.x,mob.y);
-  if(mob.type==='cow') spawnDrop(room,I.RAW_MEAT,3,mob.x,mob.y);
-  if(mob.type==='sheep'){
-    spawnDrop(room,I.RAW_MEAT,1,mob.x,mob.y);
-    spawnDrop(room,I.WOOL,1+Math.floor(Math.random()*2),mob.x+8,mob.y);
-  }
-  if(mob.type==='zombie'){
-    if(Math.random()<.45) spawnDrop(room,T.COAL,1,mob.x,mob.y);
-  }
-  if(mob.type==='slime'){
-    if(Math.random()<.35) spawnDrop(room,T.DIRT,1,mob.x,mob.y);
-  }
-}
-
-function nearestPlayer(room,mob,maxDist=500){
-  let best=null,bd=maxDist;
-  for(const p of Object.values(room.players)){
-    const d=Math.hypot(p.x-mob.x,p.y-mob.y);
-    if(d<bd){best=p;bd=d;}
-  }
-  return best;
-}
-
-function isNight(room){
-  const sun=Math.sin(room.timeOfDay*Math.PI*2);
-  return sun<-.05;
-}
-
-function updateMobs(room,dt,now){
-  const night=isNight(room);
-
-  // Spawn hostiles at night.
-  const hostileCount=Object.values(room.mobs).filter(m=>m.hostile).length;
-  if(night && Object.keys(room.players).length && hostileCount<10 && now-room.lastHostileSpawn>2500){
-    room.lastHostileSpawn=now;
-    const players=Object.values(room.players);
-    const target=players[Math.floor(Math.random()*players.length)];
-    let x=target.x+(Math.random()<.5?-1:1)*(220+Math.random()*220);
-    x=Math.max(TILE*2,Math.min(WORLD_W*TILE-TILE*2,x));
-    const type=Math.random()<.65?'zombie':'slime';
-    const m=makeHostileMob(room,type,x);
-    room.mobs[m.id]=m;room.dirty=true;
-  }
-
-  // Despawn remaining hostiles during bright day.
-  if(!night){
-    for(const [id,m] of Object.entries(room.mobs)){
-      if(m.hostile && Math.random()<dt*.04){
-        delete room.mobs[id];room.dirty=true;
-      }
+  // automation: wire powers adjacent lamps/powered rail if adjacent torch
+  for(const dim of DIMENSIONS){
+    const b=state.dimensions[dim].blocks;
+    for(const [key,type] of Object.entries(b)){
+      if(type!=="wire")continue;
+      const [x,y,z]=key.split(",").map(Number);
+      const powered=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].some(([dx,dy,dz])=>getBlock(dim,x+dx,y+dy,z+dz)==="torch");
+      state.automation[`${dim}:${key}`]={powered};
     }
   }
 
-  for(const m of Object.values(room.mobs)){
-    m.hurt=Math.max(0,(m.hurt||0)-dt);
-    m.attackCd=Math.max(0,(m.attackCd||0)-dt);
-
-    if(m.hostile){
-      const p=nearestPlayer(room,m,650);
-      if(p){
-        const dx=p.x-m.x;
-        m.vx=Math.sign(dx||1)*(m.speed||40);
-        if(Math.abs(dx)<26 && Math.abs(p.y-m.y)<38 && m.attackCd<=0){
-          m.attackCd=1.1;
-          p.health=Math.max(0,p.health-(m.damage||1));
-          io.to(p.id).emit('healthUpdate',{health:p.health,source:m.type});
-          if(p.health<=0) killPlayer(room,p,'was defeated');
-        }
-      }else m.vx=0;
-    }else{
-      m.wander=(m.wander||0)-dt;
-      if(m.wander<=0){
-        m.wander=1.5+Math.random()*4;
-        if(Math.random()<.28)m.vx=0;
-        else m.vx=(Math.random()<.5?-1:1)*(10+Math.random()*22);
-      }
-    }
-
-    const nx=m.x+(m.vx||0)*dt;
-    const edge=nx+Math.sign(m.vx||1)*(m.w/2+3);
-    const gy=groundY(room,edge);
-    const currentGround=groundY(room,m.x);
-    if(Math.abs(gy-currentGround)>TILE*1.6){
-      m.vx*= -1;
-    }else{
-      m.x=Math.max(TILE,Math.min(WORLD_W*TILE-TILE,nx));
-    }
-    m.y=groundY(room,m.x)-m.h/2-1;
-  }
+  for(const dim of DIMENSIONS) io.to(dim).emit("tick",{time:state.dimensions[dim].time,weather:state.dimensions[dim].weather,entities:state.entities,crops:state.crops,automation:state.automation});
 }
+setInterval(sim,200);
 
-function updateDrops(room,dt,now){
-  for(const [id,d] of Object.entries(room.drops)){
-    d.vy=(d.vy||0)+400*dt;
-    d.x+=(d.vx||0)*dt;
-    d.y+=(d.vy||0)*dt;
-    d.vx*=Math.pow(.15,dt);
-    const gy=groundY(room,d.x)-4;
-    if(d.y>gy){d.y=gy;d.vy=0;}
+const PORT=process.env.PORT||3000;
+server.listen(PORT,()=>console.log("Blockcraft Complete on",PORT));
 
-    if(now-d.born>10*60*1000){
-      delete room.drops[id];room.dirty=true;
-      io.to(room.code).emit('dropRemove',id);
-      continue;
-    }
-
-    for(const p of Object.values(room.players)){
-      if(Math.hypot(p.x-d.x,p.y-d.y)<28){
-        p.inventory[String(d.item)]=(p.inventory[String(d.item)]||0)+d.qty;
-        if(d.toolDurability!=null && p.toolState[String(d.item)]==null){
-          p.toolState[String(d.item)]=d.toolDurability;
-        }
-        delete room.drops[id];room.dirty=true;
-        io.to(room.code).emit('dropRemove',id);
-        emitInventory(p);
-        break;
-      }
-    }
-  }
-}
-
-const SMELT_RECIPES={
-  meat:{input:I.RAW_MEAT,fuel:T.COAL,output:I.COOKED_MEAT,qty:1,duration:6000,name:'Cooked Meat'},
-  iron:{input:T.IRON,fuel:T.COAL,output:I.IRON_INGOT,qty:1,duration:8000,name:'Iron Ingot'},
-  glass:{input:T.SAND,fuel:T.COAL,output:T.GLASS,qty:1,duration:7000,name:'Glass'}
-};
-
-function updateFurnaces(room,now){
-  for(const f of Object.values(room.furnaces)){
-    if(f.job && !f.job.done && now>=f.job.finishAt){
-      const r=SMELT_RECIPES[f.job.recipe];
-      f.output[String(r.output)]=(f.output[String(r.output)]||0)+r.qty;
-      f.job.done=true;
-      f.job=null;
-      room.dirty=true;
-      io.to(room.code).emit('furnaceUpdate',f);
-    }
-  }
-}
-
-function allPlayersSleeping(room){
-  const ps=Object.values(room.players);
-  return ps.length>0 && ps.every(p=>p.sleeping);
-}
-
-function tick(){
-  const now=Date.now(),dt=.1;
-  for(const room of rooms.values()){
-    room.timeOfDay=(room.timeOfDay+dt/720)%1;
-    updateMobs(room,dt,now);
-    updateDrops(room,dt,now);
-    updateFurnaces(room,now);
-
-    if(allPlayersSleeping(room) && isNight(room)){
-      room.timeOfDay=.27;
-      for(const p of Object.values(room.players)) p.sleeping=false;
-      io.to(room.code).emit('chatMessage',{
-        playerId:null,name:'Server',message:'Everyone slept. Morning arrived.',time:now,system:true
-      });
-    }
-
-    if(now-room.lastMobBroadcast>200){
-      room.lastMobBroadcast=now;
-      io.to(room.code).emit('mobState',room.mobs);
-      io.to(room.code).emit('dropState',room.drops);
-    }
-    if(now-room.lastTimeBroadcast>1000){
-      room.lastTimeBroadcast=now;
-      io.to(room.code).emit('worldTime',room.timeOfDay);
-    }
-  }
-}
-setInterval(tick,100);
-
-setInterval(async()=>{
-  for(const room of rooms.values()){
-    try{
-      if(room.dirty || Date.now()-room.lastSaved>30000) await saveWorld(room);
-      for(const p of Object.values(room.players)){
-        if(Date.now()-(p.lastPersisted||0)>10000) await savePlayer(room,p);
-      }
-    }catch(e){console.error('Autosave:',e);}
-  }
-},10000);
-
-function chestKey(x,y){return `${x},${y}`;}
-
-io.on('connection',socket=>{
-  socket.on('createRoom',async({name}={})=>{
-    try{
-      const room=await makeRoom(name);
-      await joinRoom(socket,room,name);
-    }catch(e){console.error(e);socket.emit('roomError','Could not create world.');}
-  });
-
-  socket.on('joinRoom',async({room,name}={})=>{
-    try{
-      const code=String(room||'').trim().toUpperCase();
-      const r=await loadRoom(code);
-      if(!r){socket.emit('roomError','World not found.');return;}
-      await joinRoom(socket,r,name);
-    }catch(e){console.error(e);socket.emit('roomError','Could not load world.');}
-  });
-
-  socket.on('playerMove',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id]; if(!r||!p)return;
-    if(Number.isFinite(Number(data.x)))p.x=Number(data.x);
-    if(Number.isFinite(Number(data.y)))p.y=Number(data.y);
-    p.vx=Number(data.vx)||0;p.vy=Number(data.vy)||0;p.dir=Number(data.dir)||1;
-    socket.to(r.code).emit('playerMove',publicPlayer(p));
-  });
-
-  socket.on('playerState',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    if(Number.isFinite(Number(data.x)))p.x=Number(data.x);
-    if(Number.isFinite(Number(data.y)))p.y=Number(data.y);
-    if(Number.isFinite(Number(data.health)))p.health=Math.max(0,Math.min(10,Number(data.health)));
-    if(Number.isFinite(Number(data.hunger)))p.hunger=Math.max(0,Math.min(10,Number(data.hunger)));
-    p.inventory=cleanInventory(data.inventory);
-    p.toolState=cleanToolState(data.toolState);
-    if(Array.isArray(data.hotbar) && data.hotbar.length===10)p.hotbar=data.hotbar.map(x=>Number(x)||0);
-    if(Number.isFinite(Number(data.spawnX)))p.spawnX=Number(data.spawnX);
-    if(Number.isFinite(Number(data.spawnY)))p.spawnY=Number(data.spawnY);
-  });
-
-  socket.on('chatMessage',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    let msg=String(data?.message||'').replace(/[\r\n\t]+/g,' ').trim().slice(0,150);
-    if(!msg)return;
-    const now=Date.now();if(p.lastChatAt&&now-p.lastChatAt<500)return;p.lastChatAt=now;
-
-    if(msg.startsWith('/')){
-      const [cmd,...args]=msg.slice(1).split(/\s+/);
-      const c=cmd.toLowerCase();
-      if(c==='help'){
-        socket.emit('chatMessage',{playerId:null,name:'Server',
-          message:'/players /spawn /help; owner: /kick NAME /setspawn /pvp on|off /save',time:now,system:true});
-        return;
-      }
-      if(c==='players'){
-        socket.emit('chatMessage',{playerId:null,name:'Server',
-          message:'Online: '+Object.values(r.players).map(x=>x.name).join(', '),time:now,system:true});
-        return;
-      }
-      if(c==='spawn'){
-        p.x=p.spawnX??r.spawn.x;p.y=p.spawnY??r.spawn.y;
-        socket.emit('teleport',{x:p.x,y:p.y});return;
-      }
-      const owner=p.name===r.ownerName;
-      if(!owner){
-        socket.emit('chatMessage',{playerId:null,name:'Server',message:'Owner command only.',time:now,system:true});
-        return;
-      }
-      if(c==='kick'){
-        const targetName=args.join(' ').toLowerCase();
-        const target=Object.values(r.players).find(x=>x.name.toLowerCase()===targetName && x.id!==p.id);
-        if(target){io.to(target.id).emit('kicked');setTimeout(()=>io.sockets.sockets.get(target.id)?.disconnect(true),150);}
-        return;
-      }
-      if(c==='setspawn'){
-        r.spawn={x:p.x,y:p.y};r.dirty=true;
-        io.to(r.code).emit('chatMessage',{playerId:null,name:'Server',message:'World spawn updated.',time:now,system:true});
-        return;
-      }
-      if(c==='pvp'){
-        const v=(args[0]||'').toLowerCase();
-        if(v==='on'||v==='off'){r.settings.pvp=v==='on';r.dirty=true;io.to(r.code).emit('settingsUpdate',r.settings);}
-        return;
-      }
-      if(c==='save'){
-        saveWorld(r).then(()=>socket.emit('chatMessage',{playerId:null,name:'Server',message:'World saved.',time:Date.now(),system:true}));
-        return;
-      }
-      socket.emit('chatMessage',{playerId:null,name:'Server',message:'Unknown command. Try /help.',time:now,system:true});
-      return;
-    }
-
-    io.to(r.code).emit('chatMessage',{playerId:socket.id,name:p.name,message:msg,time:now,system:false});
-  });
-
-  socket.on('mineBlock',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    const x=data?.x|0,y=data?.y|0;
-    if(x<0||x>=WORLD_W||y<0||y>=WORLD_H)return;
-    const cx=(x+.5)*TILE,cy=(y+.5)*TILE;
-    if(Math.hypot(cx-p.x,cy-p.y)>TILE*5.5)return;
-    const block=r.world[y][x];if(block===T.AIR||block===T.WATER)return;
-
-    const key=chestKey(x,y);
-    if(block===T.CHEST && r.chests[key]){
-      for(const [id,n] of Object.entries(r.chests[key].items||{})) spawnDrop(r,Number(id),n,cx,cy);
-      delete r.chests[key];
-    }
-    if(block===T.FURNACE && r.furnaces[key]){
-      const f=r.furnaces[key];
-      for(const [id,n] of Object.entries(f.output||{})) spawnDrop(r,Number(id),n,cx,cy);
-      delete r.furnaces[key];
-    }
-    if(block===T.BED) delete r.beds[key];
-
-    r.world[y][x]=T.AIR;r.dirty=true;
-    spawnDrop(r,blockDrop(block),1,cx,cy);
-    io.to(r.code).emit('blockUpdate',{x,y,block:T.AIR});
-  });
-
-  socket.on('placeBlock',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    const x=data?.x|0,y=data?.y|0,block=data?.block|0;
-    if(x<0||x>=WORLD_W||y<0||y>=WORLD_H)return;
-    if(Math.hypot((x+.5)*TILE-p.x,(y+.5)*TILE-p.y)>TILE*5.5)return;
-    if(r.world[y][x]!==T.AIR)return;
-    const allowed=[T.GRASS,T.DIRT,T.STONE,T.WOOD,T.LEAF,T.SAND,T.CRAFT,T.FURNACE,T.CHEST,T.TORCH,T.SNOW,T.CACTUS,T.GLASS,T.BED];
-    if(!allowed.includes(block))return;
-    r.world[y][x]=block;r.dirty=true;
-    const key=chestKey(x,y);
-    if(block===T.CHEST)r.chests[key]={x,y,items:{}};
-    if(block===T.FURNACE)r.furnaces[key]={x,y,output:{},job:null};
-    if(block===T.BED)r.beds[key]={x,y};
-    io.to(r.code).emit('blockUpdate',{x,y,block});
-  });
-
-  socket.on('attackMob',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id],m=r?.mobs[data?.mobId];if(!r||!p||!m)return;
-    if(Math.hypot(p.x-m.x,p.y-m.y)>TILE*3.4)return;
-    const held=Number(data?.heldItem)||0;
-    const dmg=held===I.IRON_SWORD?5:held===I.STONE_SWORD?4:held===I.WOOD_SWORD?3:1;
-    m.hp-=dmg;m.hurt=.2;
-    if([I.WOOD_SWORD,I.STONE_SWORD,I.IRON_SWORD].includes(held)) socket.emit('toolDamage',{item:held,amount:1});
-    if(m.hp<=0){mobLoot(r,m);delete r.mobs[m.id];r.dirty=true;}
-  });
-
-  socket.on('attackPlayer',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id],t=r?.players[data?.targetId];if(!r||!p||!t||!r.settings.pvp)return;
-    if(Math.hypot(p.x-t.x,p.y-t.y)>TILE*3.2)return;
-    const held=Number(data?.heldItem)||0;
-    const dmg=held===I.IRON_SWORD?4:held===I.STONE_SWORD?3:held===I.WOOD_SWORD?2:1;
-    t.health=Math.max(0,t.health-dmg);io.to(t.id).emit('healthUpdate',{health:t.health,source:p.name});
-    if(t.health<=0)killPlayer(r,t,'was defeated by '+p.name);
-  });
-
-  socket.on('playerDied',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(r&&p)killPlayer(r,p,'died');
-  });
-
-  socket.on('openChest',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    const key=chestKey(data.x|0,data.y|0),c=r.chests[key];if(!c)return;
-    if(Math.hypot((c.x+.5)*TILE-p.x,(c.y+.5)*TILE-p.y)>TILE*5)return;
-    socket.emit('chestOpen',c);
-  });
-
-  socket.on('chestTransfer',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    p.inventory=cleanInventory(data.inventory);
-    const key=chestKey(data.x|0,data.y|0),c=r.chests[key];if(!c)return;
-    const id=String(Number(data.item)||0),dir=data.direction;
-    if(dir==='deposit' && (p.inventory[id]||0)>0){
-      p.inventory[id]--;c.items[id]=(c.items[id]||0)+1;
-    }else if(dir==='withdraw' && (c.items[id]||0)>0){
-      c.items[id]--;p.inventory[id]=(p.inventory[id]||0)+1;
-    }
-    if(c.items[id]===0)delete c.items[id];
-    if(p.inventory[id]===0)delete p.inventory[id];
-    r.dirty=true;emitInventory(p);
-    io.to(r.code).emit('chestUpdate',c);
-  });
-
-  socket.on('openFurnace',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    const f=r.furnaces[chestKey(data.x|0,data.y|0)];if(f)socket.emit('furnaceOpen',f);
-  });
-
-  socket.on('startSmelt',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    p.inventory=cleanInventory(data.inventory);
-    const f=r.furnaces[chestKey(data.x|0,data.y|0)],recipe=SMELT_RECIPES[data.recipe];
-    if(!f||!recipe||f.job)return;
-    const input=String(recipe.input),fuel=String(recipe.fuel);
-    if((p.inventory[input]||0)<1||(p.inventory[fuel]||0)<1){socket.emit('furnaceMessage','Need input + coal.');return;}
-    p.inventory[input]--;p.inventory[fuel]--;
-    if(!p.inventory[input])delete p.inventory[input];if(!p.inventory[fuel])delete p.inventory[fuel];
-    f.job={recipe:data.recipe,startedAt:Date.now(),finishAt:Date.now()+recipe.duration};
-    r.dirty=true;emitInventory(p);io.to(r.code).emit('furnaceUpdate',f);
-  });
-
-  socket.on('collectFurnace',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    const f=r.furnaces[chestKey(data.x|0,data.y|0)];if(!f)return;
-    for(const [id,n] of Object.entries(f.output||{}))p.inventory[id]=(p.inventory[id]||0)+n;
-    f.output={};r.dirty=true;emitInventory(p);io.to(r.code).emit('furnaceUpdate',f);
-  });
-
-  socket.on('useBed',data=>{
-    const r=rooms.get(String(data?.room||'').toUpperCase());
-    const p=r?.players[socket.id];if(!r||!p)return;
-    const b=r.beds[chestKey(data.x|0,data.y|0)];if(!b)return;
-    if(Math.hypot((b.x+.5)*TILE-p.x,(b.y+.5)*TILE-p.y)>TILE*5)return;
-    p.spawnX=(b.x+.5)*TILE;p.spawnY=(b.y-1)*TILE;p.sleeping=isNight(r);
-    socket.emit('spawnPointSet',{x:p.spawnX,y:p.spawnY});
-    io.to(r.code).emit('chatMessage',{playerId:null,name:'Server',
-      message:p.sleeping?`${p.name} is sleeping.`:`${p.name}'s respawn point was set.`,
-      time:Date.now(),system:true});
-  });
-
-  socket.on('disconnect',async()=>{
-    for(const [code,r] of rooms){
-      const p=r.players[socket.id];if(!p)continue;
-      const name=p.name;
-      try{await savePlayer(r,p);}catch(e){console.error(e);}
-      delete r.players[socket.id];
-      socket.to(code).emit('playerLeft',socket.id);
-      io.to(code).emit('chatMessage',{playerId:null,name:'Server',message:`${name} left the world.`,time:Date.now(),system:true});
-      broadcastPlayerList(r);
-      if(!Object.keys(r.players).length){
-        try{await saveWorld(r);rooms.delete(code);console.log(`Saved/unloaded ${code}`);}catch(e){console.error(e);}
-      }
-    }
-  });
-});
-
-async function shutdown(sig){
-  console.log(sig,'saving...');
-  try{
-    for(const r of rooms.values()){
-      await saveWorld(r);
-      for(const p of Object.values(r.players))await savePlayer(r,p);
-    }
-  }catch(e){console.error(e);}
-  if(db)try{await db.end();}catch{}
-  server.close(()=>process.exit(0));
-  setTimeout(()=>process.exit(0),5000).unref();
-}
-process.on('SIGTERM',()=>shutdown('SIGTERM'));
-process.on('SIGINT',()=>shutdown('SIGINT'));
-
-initDatabase().then(()=>{
-  server.listen(PORT,()=>console.log(`PixelCraft on port ${PORT} | persistence ${hasDatabase?'ON':'OFF'}`));
-}).catch(e=>{console.error('DB init failed',e);process.exit(1);});

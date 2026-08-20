@@ -1,661 +1,74 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PixelCraft Survival</title>
-<script src="/socket.io/socket.io.js"></script>
-<style>
-html,body{margin:0;height:100%;overflow:hidden;background:#101215;font-family:ui-monospace,Consolas,monospace}
-canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated}
-#help{position:fixed;left:12px;top:12px;z-index:4;background:rgba(0,0,0,.58);color:white;padding:9px 11px;border:1px solid rgba(255,255,255,.2);font-size:11px;line-height:1.45;pointer-events:none}
-#help b{color:#ffe169}
-#roomBadge{position:fixed;right:12px;top:12px;z-index:5;background:rgba(0,0,0,.65);color:white;padding:8px 10px;border:1px solid rgba(255,255,255,.18);font-size:12px;display:none}
-#mpMenu{position:fixed;inset:0;background:rgba(5,7,10,.9);display:flex;align-items:center;justify-content:center;z-index:30;color:white}
-#mpCard{width:min(430px,calc(100vw - 36px));background:#171a1f;border:2px solid #686d76;padding:22px;box-shadow:0 18px 55px rgba(0,0,0,.55)}
-#mpCard h1{margin:0 0 6px;color:#ffe169;font-size:25px}
-#mpCard p{margin:0 0 15px;color:#aaa;font-size:12px;line-height:1.45}
-#mpCard input{width:100%;box-sizing:border-box;margin:6px 0;padding:11px;background:#0d1014;color:#fff;border:1px solid #555;font:inherit;outline:none}
-#mpCard button{width:100%;margin-top:7px;padding:11px;background:#303741;color:#fff;border:1px solid #777;font:inherit;cursor:pointer}
-#mpCard button:hover{background:#3c4652}
-#mpStatus{margin-top:11px;color:#9fc8ff;font-size:12px;min-height:17px}
-#chatWrap{position:fixed;left:13px;bottom:83px;width:min(390px,calc(100vw - 26px));z-index:12}
-#chatMessages{height:135px;overflow-y:auto;padding:7px 9px;background:rgba(0,0,0,.44);border:1px solid rgba(255,255,255,.14);color:#fff;font-size:12px;line-height:1.42;box-sizing:border-box}
-.chatLine{overflow-wrap:anywhere;text-shadow:0 1px 1px #000}.chatName{font-weight:bold;color:#ffe169}.chatSystem{color:#a9d3ff;font-style:italic}
-#chatInput{display:none;width:100%;box-sizing:border-box;margin-top:4px;padding:9px;background:rgba(5,7,10,.96);color:#fff;border:1px solid #aaa;font:13px ui-monospace,Consolas,monospace;outline:none}
-#chatHint{color:rgba(255,255,255,.72);font-size:10px;margin-top:3px}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Blockcraft Complete</title>
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div id="mpMenu">
-  <div id="mpCard">
-    <h1>PIXELCRAFT SURVIVAL</h1>
-    <p>Persistent multiplayer survival world. Your player name is currently your save identity inside each world.</p>
-    <input id="playerName" maxlength="16" placeholder="Your name" value="Player">
-    <button id="createRoom">Create New World</button>
-    <input id="roomCode" maxlength="6" placeholder="Room code">
-    <button id="joinRoom">Join Saved World</button>
-    <div id="mpStatus"></div>
+  <div id="login" class="screen">
+    <div class="panel login-panel">
+      <h1>BLOCKCRAFT</h1>
+      <p>Persistent multiplayer survival world</p>
+      <input id="username" maxlength="16" placeholder="Username">
+      <button id="joinBtn">Join world</button>
+      <div id="loginError"></div>
+    </div>
   </div>
-</div>
 
-<div id="help"><b>PIXELCRAFT</b><br>
-A/D move · SPACE jump · Left click mine/attack · Right click place/interact<br>
-1–0 hotbar · Wheel select · C craft · I inventory · E eat · F nearest furnace<br>
-ENTER chat · TAB players · ESC close menu
-</div>
-<div id="roomBadge"></div>
-<div id="chatWrap">
-  <div id="chatMessages"></div>
-  <input id="chatInput" maxlength="150" autocomplete="off" placeholder="Message...">
-  <div id="chatHint">ENTER: chat</div>
-</div>
-<canvas id="game"></canvas>
+  <div id="hud" class="hidden">
+    <div id="stats">
+      <div id="health"></div>
+      <div id="armor"></div>
+      <div id="hunger"></div>
+      <div id="effects"></div>
+    </div>
+    <div id="objective"></div>
+    <div id="crosshair">+</div>
+    <div id="mineBar"><div id="mineFill"></div></div>
+    <div id="hotbar"></div>
+    <div id="weatherLabel"></div>
+    <div id="dimensionLabel"></div>
+    <div id="achievementToast"></div>
+  </div>
 
-<script>
-(() => {
-const socket=io();
-const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
-ctx.imageSmoothingEnabled=false;
-const lightCanvas=document.createElement('canvas'),lctx=lightCanvas.getContext('2d');
+  <div id="chatWrap" class="hidden">
+    <div id="chatLog"></div>
+    <input id="chatInput" maxlength="120" placeholder="Press Enter to chat">
+  </div>
 
-let W=0,H=0,DPR=1;
-function resize(){
-  DPR=Math.max(1,Math.min(2,devicePixelRatio||1));
-  W=innerWidth;H=innerHeight;
-  canvas.width=W*DPR;canvas.height=H*DPR;
-  canvas.style.width=W+'px';canvas.style.height=H+'px';
-  ctx.setTransform(DPR,0,0,DPR,0,0);
-  lightCanvas.width=Math.max(1,Math.floor(W));lightCanvas.height=Math.max(1,Math.floor(H));
-}
-addEventListener('resize',resize);resize();
+  <div id="inventoryScreen" class="modal hidden">
+    <div class="panel wide">
+      <div class="modal-head"><h2>Inventory & Crafting</h2><button data-close="inventoryScreen">×</button></div>
+      <div id="equipment"></div>
+      <div id="inventoryGrid"></div>
+      <h3>Crafting</h3>
+      <div id="craftRecipes"></div>
+    </div>
+  </div>
 
-const TILE=24,WORLD_W=260,WORLD_H=90,GRAV=1100,MOVE=220,JUMP=430;
-const T={AIR:0,GRASS:1,DIRT:2,STONE:3,WOOD:4,LEAF:5,COAL:6,IRON:7,SAND:8,WATER:9,CRAFT:10,FURNACE:11,CHEST:12,TORCH:13,SNOW:14,CACTUS:15,GLASS:16,BED:17};
-const I={PLANK:101,STICK:102,WOOD_PICK:103,STONE_PICK:104,TORCH:105,RAW_MEAT:106,COOKED_MEAT:107,IRON_INGOT:108,IRON_PICK:109,WOOD_AXE:110,STONE_AXE:111,IRON_AXE:112,WOOD_SWORD:113,STONE_SWORD:114,IRON_SWORD:115,WOOL:116};
+  <div id="containerScreen" class="modal hidden">
+    <div class="panel wide">
+      <div class="modal-head"><h2 id="containerTitle">Container</h2><button data-close="containerScreen">×</button></div>
+      <div id="containerBody"></div>
+    </div>
+  </div>
 
-const blockInfo={
- [T.GRASS]:{name:'Grass',solid:1,hard:.18},[T.DIRT]:{name:'Dirt',solid:1,hard:.16},
- [T.STONE]:{name:'Stone',solid:1,hard:.52},[T.WOOD]:{name:'Wood',solid:1,hard:.4},
- [T.LEAF]:{name:'Leaves',solid:1,hard:.14},[T.COAL]:{name:'Coal Ore',solid:1,hard:.58},
- [T.IRON]:{name:'Iron Ore',solid:1,hard:.72},[T.SAND]:{name:'Sand',solid:1,hard:.16},
- [T.WATER]:{name:'Water',solid:0,hard:0},[T.CRAFT]:{name:'Crafting Table',solid:1,hard:.4},
- [T.FURNACE]:{name:'Furnace',solid:1,hard:.65},[T.CHEST]:{name:'Chest',solid:1,hard:.38},
- [T.TORCH]:{name:'Torch',solid:0,hard:.06},[T.SNOW]:{name:'Snow',solid:1,hard:.14},
- [T.CACTUS]:{name:'Cactus',solid:1,hard:.28},[T.GLASS]:{name:'Glass',solid:1,hard:.18},
- [T.BED]:{name:'Bed',solid:1,hard:.3}
-};
-const itemInfo={
- [I.PLANK]:{name:'Wood Planks',mark:'P'},[I.STICK]:{name:'Sticks',mark:'/'},
- [I.WOOD_PICK]:{name:'Wood Pickaxe',mark:'⛏'},[I.STONE_PICK]:{name:'Stone Pickaxe',mark:'⛏'},
- [I.TORCH]:{name:'Torch',mark:'!'},[I.RAW_MEAT]:{name:'Raw Meat',mark:'M'},
- [I.COOKED_MEAT]:{name:'Cooked Meat',mark:'F'},[I.IRON_INGOT]:{name:'Iron Ingot',mark:'I'},
- [I.IRON_PICK]:{name:'Iron Pickaxe',mark:'⛏'},[I.WOOD_AXE]:{name:'Wood Axe',mark:'A'},
- [I.STONE_AXE]:{name:'Stone Axe',mark:'A'},[I.IRON_AXE]:{name:'Iron Axe',mark:'A'},
- [I.WOOD_SWORD]:{name:'Wood Sword',mark:'/'},[I.STONE_SWORD]:{name:'Stone Sword',mark:'/'},
- [I.IRON_SWORD]:{name:'Iron Sword',mark:'/'},[I.WOOL]:{name:'Wool',mark:'W'}
-};
-const TOOL_MAX={
- [I.WOOD_PICK]:45,[I.STONE_PICK]:100,[I.IRON_PICK]:220,
- [I.WOOD_AXE]:45,[I.STONE_AXE]:100,[I.IRON_AXE]:220,
- [I.WOOD_SWORD]:60,[I.STONE_SWORD]:130,[I.IRON_SWORD]:260
-};
-const PICK_LEVEL={[I.WOOD_PICK]:1,[I.STONE_PICK]:2,[I.IRON_PICK]:3};
-const AXE_LEVEL={[I.WOOD_AXE]:1,[I.STONE_AXE]:2,[I.IRON_AXE]:3};
-const SWORDS=[I.WOOD_SWORD,I.STONE_SWORD,I.IRON_SWORD];
-const PLACEABLE=new Set([T.GRASS,T.DIRT,T.STONE,T.WOOD,T.LEAF,T.SAND,T.CRAFT,T.FURNACE,T.CHEST,T.SNOW,T.CACTUS,T.GLASS,T.BED]);
+  <div id="achievementsScreen" class="modal hidden">
+    <div class="panel wide">
+      <div class="modal-head"><h2>Achievements</h2><button data-close="achievementsScreen">×</button></div>
+      <div id="achievementList"></div>
+    </div>
+  </div>
 
-function itemName(id){return blockInfo[id]?.name||itemInfo[id]?.name||'Unknown';}
-function isTool(id){return TOOL_MAX[id]!=null;}
+  <div id="help" class="hidden">
+    WASD move · Space jump · Shift sprint · Left click mine/attack · Right click place/use ·
+    1-9 hotbar · E inventory · Enter chat · G achievements · F fish/use vehicle · R potion ·
+    Q drop item · P portal debug recipe hint
+  </div>
 
-let world=Array.from({length:WORLD_H},()=>new Uint8Array(WORLD_W));
-let surface=new Int16Array(WORLD_W);
-let remotePlayers={},drops={},mobs={},chests={},furnaces={},beds={};
-let worldSettings={pvp:false},ownerName='',worldSpawn={x:300,y:300};
-let currentRoom=null,myPlayerId=null,timeOfDay=.23;
-let cam={x:0,y:0},lastMoveSend=0,lastStateSend=0,lastDeathSent=0;
-
-const inv={
- [T.DIRT]:20,[T.WOOD]:6,[T.GRASS]:4,[I.TORCH]:0
-};
-const toolState={};
-let hotbar=[T.DIRT,T.STONE,T.WOOD,I.TORCH,I.WOOD_PICK,I.STONE_PICK,I.WOOD_SWORD,I.COOKED_MEAT,T.CHEST,T.BED];
-let selected=0;
-
-const player={x:0,y:0,w:15,h:30,vx:0,vy:0,onGround:false,health:10,maxHealth:10,hunger:10,maxHunger:10,dir:1,regenTimer:0,starveTimer:0,spawnX:0,spawnY:0};
-
-const recipes=[
- {name:'Wood Planks ×4',out:I.PLANK,qty:4,needs:{[T.WOOD]:1}},
- {name:'Sticks ×4',out:I.STICK,qty:4,needs:{[I.PLANK]:2}},
- {name:'Crafting Table',out:T.CRAFT,qty:1,needs:{[I.PLANK]:4}},
- {name:'Furnace',out:T.FURNACE,qty:1,needs:{[T.STONE]:8}},
- {name:'Chest',out:T.CHEST,qty:1,needs:{[I.PLANK]:8}},
- {name:'Bed',out:T.BED,qty:1,needs:{[I.PLANK]:3,[I.WOOL]:3}},
- {name:'Torches ×4',out:I.TORCH,qty:4,needs:{[T.COAL]:1,[I.STICK]:1}},
- {name:'Wood Pickaxe',out:I.WOOD_PICK,qty:1,needs:{[I.PLANK]:3,[I.STICK]:2}},
- {name:'Stone Pickaxe',out:I.STONE_PICK,qty:1,needs:{[T.STONE]:3,[I.STICK]:2}},
- {name:'Iron Pickaxe',out:I.IRON_PICK,qty:1,needs:{[I.IRON_INGOT]:3,[I.STICK]:2}},
- {name:'Wood Axe',out:I.WOOD_AXE,qty:1,needs:{[I.PLANK]:3,[I.STICK]:2}},
- {name:'Stone Axe',out:I.STONE_AXE,qty:1,needs:{[T.STONE]:3,[I.STICK]:2}},
- {name:'Iron Axe',out:I.IRON_AXE,qty:1,needs:{[I.IRON_INGOT]:3,[I.STICK]:2}},
- {name:'Wood Sword',out:I.WOOD_SWORD,qty:1,needs:{[I.PLANK]:2,[I.STICK]:1}},
- {name:'Stone Sword',out:I.STONE_SWORD,qty:1,needs:{[T.STONE]:2,[I.STICK]:1}},
- {name:'Iron Sword',out:I.IRON_SWORD,qty:1,needs:{[I.IRON_INGOT]:2,[I.STICK]:1}}
-];
-
-let craftingOpen=false,inventoryOpen=false,playerListOpen=false;
-let currentChest=null,currentFurnace=null;
-let craftingSelected=0,toast='',toastUntil=0;
-
-const mpMenu=document.getElementById('mpMenu'),mpStatus=document.getElementById('mpStatus'),roomBadge=document.getElementById('roomBadge');
-const nameInput=document.getElementById('playerName'),roomInput=document.getElementById('roomCode');
-for(const f of [nameInput,roomInput]){
-  f.addEventListener('keydown',e=>e.stopPropagation());
-  f.addEventListener('keyup',e=>e.stopPropagation());
-}
-document.getElementById('createRoom').onclick=()=>{socket.emit('createRoom',{name:(nameInput.value||'Player').trim()});mpStatus.textContent='Creating world...';};
-document.getElementById('joinRoom').onclick=()=>{const code=(roomInput.value||'').trim().toUpperCase();if(!code){mpStatus.textContent='Enter a room code.';return;}socket.emit('joinRoom',{room:code,name:(nameInput.value||'Player').trim()});mpStatus.textContent='Joining '+code+'...';};
-
-const chatMessages=document.getElementById('chatMessages'),chatInput=document.getElementById('chatInput'),chatHint=document.getElementById('chatHint');
-let chatOpen=false;
-const speechBubbles={},SPEECH_MS=4500;
-function addChatLine(d){
-  const line=document.createElement('div');line.className='chatLine'+(d.system?' chatSystem':'');
-  if(d.system) line.textContent='[Server] '+String(d.message||'');
-  else{const n=document.createElement('span');n.className='chatName';n.textContent=(d.name||'Player')+': ';line.appendChild(n);line.appendChild(document.createTextNode(String(d.message||'')));}
-  chatMessages.appendChild(line);while(chatMessages.children.length>50)chatMessages.removeChild(chatMessages.firstChild);chatMessages.scrollTop=chatMessages.scrollHeight;
-}
-function setBubble(id,text){if(id)speechBubbles[id]={text:String(text).slice(0,150),until:Date.now()+SPEECH_MS};}
-socket.on('chatMessage',d=>{addChatLine(d);if(!d.system)setBubble(d.playerId,d.message);});
-function openChat(){if(!currentRoom||craftingOpen||inventoryOpen||currentChest||currentFurnace)return;chatOpen=true;clearMoveKeys();chatInput.style.display='block';chatHint.textContent='ENTER send · ESC cancel';chatInput.focus();}
-function closeChat(){chatOpen=false;chatInput.style.display='none';chatHint.textContent='ENTER: chat';chatInput.value='';chatInput.blur();}
-function sendChat(){const m=chatInput.value.trim().slice(0,150);if(m&&currentRoom)socket.emit('chatMessage',{room:currentRoom,message:m});closeChat();}
-
-function showToast(s,ms=1800){toast=s;toastUntil=Date.now()+ms;}
-
-socket.on('connect',()=>myPlayerId=socket.id);
-socket.on('roomError',m=>mpStatus.textContent=m);
-socket.on('kicked',()=>{alert('You were kicked by the world owner.');location.reload();});
-socket.on('roomJoined',d=>{
-  currentRoom=d.room;ownerName=d.ownerName||'';worldSettings=d.settings||{pvp:false};worldSpawn=d.worldSpawn||worldSpawn;
-  roomBadge.style.display='block';roomBadge.textContent=`ROOM ${d.room} · OWNER ${ownerName}`;
-  mpMenu.style.display='none';
-  world=d.world.map(r=>Uint8Array.from(r));surface=Int16Array.from(d.surface);
-  remotePlayers=d.players||{};delete remotePlayers[socket.id];
-  drops=d.drops||{};mobs=d.mobs||{};chests=d.chests||{};furnaces=d.furnaces||{};beds=d.beds||{};
-  timeOfDay=Number.isFinite(d.timeOfDay)?d.timeOfDay:.23;
-  const s=d.playerState||{};
-  player.x=Number.isFinite(s.x)?s.x:worldSpawn.x;player.y=Number.isFinite(s.y)?s.y:worldSpawn.y;
-  player.health=Number.isFinite(s.health)?s.health:10;player.hunger=Number.isFinite(s.hunger)?s.hunger:10;
-  player.spawnX=Number.isFinite(s.spawnX)?s.spawnX:worldSpawn.x;player.spawnY=Number.isFinite(s.spawnY)?s.spawnY:worldSpawn.y;
-  for(const k of Object.keys(inv))delete inv[k];
-  Object.assign(inv,s.inventory||{});
-  for(const k of Object.keys(toolState))delete toolState[k];
-  Object.assign(toolState,s.toolState||{});
-  if(Array.isArray(s.hotbar)&&s.hotbar.length===10)hotbar=s.hotbar.map(Number);
-  ensureToolDurability();
-});
-socket.on('playerJoined',p=>{if(p.id!==socket.id)remotePlayers[p.id]=p;});
-socket.on('playerLeft',id=>delete remotePlayers[id]);
-socket.on('playerMove',p=>{if(p.id!==socket.id)remotePlayers[p.id]=p;});
-socket.on('playerList',d=>{ownerName=d.ownerName||ownerName;remoteList=d.players||[];});
-socket.on('settingsUpdate',s=>{worldSettings=s||worldSettings;showToast('PVP '+(worldSettings.pvp?'ON':'OFF'));});
-socket.on('worldTime',t=>timeOfDay=t);
-socket.on('mobState',m=>mobs=m||{});
-socket.on('dropState',d=>drops=d||{});
-socket.on('dropSpawn',d=>drops[d.id]=d);
-socket.on('dropRemove',id=>delete drops[id]);
-socket.on('blockUpdate',u=>{if(world[u.y]&&u.x>=0&&u.x<WORLD_W)world[u.y][u.x]=u.block;if(u.block===T.CHEST){}});
-socket.on('inventorySnapshot',d=>{
-  for(const k of Object.keys(inv))delete inv[k];Object.assign(inv,d.inventory||{});
-  for(const k of Object.keys(toolState))delete toolState[k];Object.assign(toolState,d.toolState||{});ensureToolDurability();
-});
-socket.on('healthUpdate',d=>{player.health=Number(d.health);showToast(`Hit by ${d.source||'mob'}`);});
-socket.on('playerRespawn',d=>{
-  player.x=d.x;player.y=d.y;player.vx=player.vy=0;player.health=d.health;player.hunger=d.hunger;
-  for(const k of Object.keys(inv))delete inv[k];Object.assign(inv,d.inventory||{});
-  for(const k of Object.keys(toolState))delete toolState[k];Object.assign(toolState,d.toolState||{});
-  showToast('You died. Inventory dropped.',2800);
-});
-socket.on('teleport',d=>{player.x=d.x;player.y=d.y;player.vx=player.vy=0;});
-socket.on('spawnPointSet',d=>{player.spawnX=d.x;player.spawnY=d.y;showToast('Respawn point set');});
-socket.on('toolDamage',d=>damageTool(Number(d.item),Number(d.amount)||1));
-socket.on('chestOpen',c=>{currentChest=c;closeOtherMenus('chest');});
-socket.on('chestUpdate',c=>{chests[`${c.x},${c.y}`]=c;if(currentChest&&currentChest.x===c.x&&currentChest.y===c.y)currentChest=c;});
-socket.on('furnaceOpen',f=>{currentFurnace=f;closeOtherMenus('furnace');});
-socket.on('furnaceUpdate',f=>{furnaces[`${f.x},${f.y}`]=f;if(currentFurnace&&currentFurnace.x===f.x&&currentFurnace.y===f.y)currentFurnace=f;});
-socket.on('furnaceMessage',m=>showToast(m));
-
-let remoteList=[];
-function closeOtherMenus(except=''){
-  if(except!=='craft')craftingOpen=false;if(except!=='inventory')inventoryOpen=false;
-  if(except!=='chest')currentChest=null;if(except!=='furnace')currentFurnace=null;
-  if(except!=='chat'&&chatOpen)closeChat();
-}
-function menuOpen(){return craftingOpen||inventoryOpen||currentChest||currentFurnace||chatOpen;}
-
-function ensureToolDurability(){
-  for(const [id,max] of Object.entries(TOOL_MAX)){
-    if((inv[id]||0)>0 && !(id in toolState))toolState[id]=max;
-    if((inv[id]||0)<=0)delete toolState[id];
-  }
-}
-function damageTool(id,amt=1){
-  if(!isTool(id)||(inv[id]||0)<=0)return;
-  if(toolState[id]==null)toolState[id]=TOOL_MAX[id];
-  toolState[id]-=amt;
-  if(toolState[id]<=0){
-    inv[id]--;
-    if(inv[id]>0){toolState[id]=TOOL_MAX[id];showToast(`${itemName(id)} broke — next one equipped`);}
-    else{delete inv[id];delete toolState[id];showToast(`${itemName(id)} broke`);}
-  }
-}
-
-const keys={};
-function clearMoveKeys(){keys.a=keys.d=keys.arrowleft=keys.arrowright=false;player.vx=0;}
-addEventListener('keydown',e=>{
-  const active=document.activeElement;
-  if(active&&(active.tagName==='INPUT'||active.tagName==='TEXTAREA'||active.isContentEditable)&&active!==chatInput)return;
-
-  const k=e.key.toLowerCase();
-  if(chatOpen){
-    if(e.key==='Enter'){sendChat();e.preventDefault();}
-    else if(e.key==='Escape'){closeChat();e.preventDefault();}
-    return;
-  }
-  if(e.key==='Enter'&&currentRoom){openChat();e.preventDefault();return;}
-  if(e.key==='Escape'){craftingOpen=false;inventoryOpen=false;currentChest=null;currentFurnace=null;playerListOpen=false;return;}
-  if(e.key==='Tab'){playerListOpen=!playerListOpen;e.preventDefault();return;}
-  if(k==='c'){craftingOpen=!craftingOpen;closeOtherMenus(craftingOpen?'craft':'');e.preventDefault();return;}
-  if(k==='i'){inventoryOpen=!inventoryOpen;closeOtherMenus(inventoryOpen?'inventory':'');e.preventDefault();return;}
-  if(k==='f'){openNearestFurnace();e.preventDefault();return;}
-  if(k==='e'){eatFood();e.preventDefault();return;}
-  if('123456789'.includes(e.key)){selected=Number(e.key)-1;return;}
-  if(e.key==='0'){selected=9;return;}
-  if(menuOpen())return;
-  keys[k]=true;
-  if(e.key===' '&&player.onGround){player.vy=-JUMP;player.onGround=false;e.preventDefault();}
-});
-addEventListener('keyup',e=>{if(chatOpen)return;keys[e.key.toLowerCase()]=false;});
-chatInput.addEventListener('mousedown',e=>e.stopPropagation());
-
-let mouse={x:0,y:0,down:false},mining={tx:-1,ty:-1,p:0};
-canvas.addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;});
-canvas.addEventListener('contextmenu',e=>e.preventDefault());
-canvas.addEventListener('wheel',e=>{if(!menuOpen())selected=(selected+(e.deltaY>0?1:-1)+10)%10;},{passive:true});
-
-canvas.addEventListener('mousedown',e=>{
-  if(handleMenuClick(e.clientX,e.clientY,e.button))return;
-  if(menuOpen())return;
-  if(e.button===0){
-    if(tryAttack(e.clientX,e.clientY))return;
-    mouse.down=true;
-  }
-  if(e.button===2)rightClickWorld();
-});
-canvas.addEventListener('mouseup',e=>{if(e.button===0){mouse.down=false;mining.p=0;}});
-
-function targetTile(){
-  return {tx:Math.floor((mouse.x+cam.x)/TILE),ty:Math.floor((mouse.y+cam.y)/TILE)};
-}
-function inReach(tx,ty,r=5.4){return Math.hypot((tx+.5)*TILE-player.x,(ty+.5)*TILE-player.y)<TILE*r;}
-function solidAtPixel(px,py){
-  const tx=Math.floor(px/TILE),ty=Math.floor(py/TILE);
-  if(tx<0||tx>=WORLD_W||ty<0||ty>=WORLD_H)return true;
-  return !!blockInfo[world[ty][tx]]?.solid;
-}
-function moveAndCollide(dt){
-  player.vy+=GRAV*dt;
-  let dx=player.vx*dt,dy=player.vy*dt;
-  player.x+=dx;
-  if(dx>0){
-    const rx=player.x+player.w/2;
-    for(const yy of [player.y-player.h/2+2,player.y,player.y+player.h/2-2])if(solidAtPixel(rx,yy)){player.x=Math.floor(rx/TILE)*TILE-player.w/2-.01;player.vx=0;break;}
-  }else if(dx<0){
-    const lx=player.x-player.w/2;
-    for(const yy of [player.y-player.h/2+2,player.y,player.y+player.h/2-2])if(solidAtPixel(lx,yy)){player.x=(Math.floor(lx/TILE)+1)*TILE+player.w/2+.01;player.vx=0;break;}
-  }
-  player.onGround=false;player.y+=dy;
-  if(dy>0){
-    const by=player.y+player.h/2;
-    for(const xx of [player.x-player.w/2+2,player.x,player.x+player.w/2-2])if(solidAtPixel(xx,by)){player.y=Math.floor(by/TILE)*TILE-player.h/2-.01;player.vy=0;player.onGround=true;break;}
-  }else if(dy<0){
-    const ty=player.y-player.h/2;
-    for(const xx of [player.x-player.w/2+2,player.x,player.x+player.w/2-2])if(solidAtPixel(xx,ty)){player.y=(Math.floor(ty/TILE)+1)*TILE+player.h/2+.01;player.vy=0;break;}
-  }
-}
-
-function heldItem(){return Number(hotbar[selected]||0);}
-function canMine(block){
-  const h=heldItem(),lvl=PICK_LEVEL[h]||0;
-  if([T.STONE,T.COAL,T.FURNACE].includes(block)&&lvl<1)return false;
-  if(block===T.IRON&&lvl<2)return false;
-  return true;
-}
-function miningSpeed(block){
-  const h=heldItem();
-  let s=1;
-  if([T.STONE,T.COAL,T.IRON,T.FURNACE].includes(block)){
-    s=PICK_LEVEL[h]===3?5:PICK_LEVEL[h]===2?3.5:PICK_LEVEL[h]===1?2.2:.5;
-  }else if([T.WOOD,T.LEAF,T.CACTUS,T.CRAFT,T.CHEST,T.BED].includes(block)){
-    s=AXE_LEVEL[h]===3?5:AXE_LEVEL[h]===2?3.5:AXE_LEVEL[h]===1?2.2:1;
-  }
-  return s;
-}
-function mine(dt){
-  if(!mouse.down){mining.p=0;return;}
-  const {tx,ty}=targetTile();
-  if(!inReach(tx,ty)||tx<0||tx>=WORLD_W||ty<0||ty>=WORLD_H){mining.p=0;return;}
-  const b=world[ty][tx];
-  if(b===T.AIR||b===T.WATER){mining.p=0;return;}
-  if(!canMine(b)){mining.p=0;showToast(b===T.IRON?'Need a Stone or Iron Pickaxe':'Need a Pickaxe');return;}
-  if(mining.tx!==tx||mining.ty!==ty){mining.tx=tx;mining.ty=ty;mining.p=0;}
-  mining.p+=dt*miningSpeed(b)/(blockInfo[b]?.hard||.2);
-  if(mining.p>=1){
-    world[ty][tx]=T.AIR;
-    socket.emit('mineBlock',{room:currentRoom,x:tx,y:ty});
-    if((PICK_LEVEL[heldItem()]&&[T.STONE,T.COAL,T.IRON,T.FURNACE].includes(b))||(AXE_LEVEL[heldItem()]&&[T.WOOD,T.LEAF,T.CACTUS,T.CRAFT,T.CHEST,T.BED].includes(b)))damageTool(heldItem(),1);
-    mining.p=0;
-  }
-}
-
-function placeBlockId(item){
-  if(item===I.TORCH)return T.TORCH;
-  if(PLACEABLE.has(item))return item;
-  return 0;
-}
-function rightClickWorld(){
-  const {tx,ty}=targetTile();if(!inReach(tx,ty))return;
-  if(tx<0||tx>=WORLD_W||ty<0||ty>=WORLD_H)return;
-  const b=world[ty][tx];
-  if(b===T.CHEST){socket.emit('openChest',{room:currentRoom,x:tx,y:ty});return;}
-  if(b===T.FURNACE){socket.emit('openFurnace',{room:currentRoom,x:tx,y:ty});return;}
-  if(b===T.BED){socket.emit('useBed',{room:currentRoom,x:tx,y:ty});return;}
-
-  if(b!==T.AIR)return;
-  const item=heldItem(),block=placeBlockId(item);
-  if(!block||(inv[item]||0)<=0)return;
-  const bx=tx*TILE,by=ty*TILE,px0=player.x-player.w/2,px1=player.x+player.w/2,py0=player.y-player.h/2,py1=player.y+player.h/2;
-  if(blockInfo[block]?.solid && !(bx+TILE<=px0||bx>=px1||by+TILE<=py0||by>=py1))return;
-  world[ty][tx]=block;inv[item]--;if(inv[item]<=0)delete inv[item];
-  socket.emit('placeBlock',{room:currentRoom,x:tx,y:ty,block});
-}
-
-function tryAttack(sx,sy){
-  const wx=sx+cam.x,wy=sy+cam.y;
-  let nearest=null,bd=999;
-  for(const m of Object.values(mobs)){
-    if(Math.abs(wx-m.x)<=m.w/2+7&&Math.abs(wy-m.y)<=m.h/2+7){
-      const d=Math.hypot(m.x-player.x,m.y-player.y);if(d<bd){bd=d;nearest=m;}
-    }
-  }
-  if(nearest&&bd<TILE*3.4){
-    socket.emit('attackMob',{room:currentRoom,mobId:nearest.id,heldItem:heldItem()});return true;
-  }
-  if(worldSettings.pvp){
-    for(const rp of Object.values(remotePlayers)){
-      if(Math.abs(wx-rp.x)<15&&Math.abs(wy-rp.y)<22&&Math.hypot(rp.x-player.x,rp.y-player.y)<TILE*3.2){
-        socket.emit('attackPlayer',{room:currentRoom,targetId:rp.id,heldItem:heldItem()});
-        if(SWORDS.includes(heldItem()))damageTool(heldItem(),1);
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function eatFood(){
-  let id=heldItem();
-  if(![I.RAW_MEAT,I.COOKED_MEAT].includes(id))id=(inv[I.COOKED_MEAT]||0)>0?I.COOKED_MEAT:I.RAW_MEAT;
-  if((inv[id]||0)<=0||player.hunger>=10)return;
-  inv[id]--;if(inv[id]<=0)delete inv[id];
-  player.hunger=Math.min(10,player.hunger+(id===I.COOKED_MEAT?4:1.5));
-  showToast(id===I.COOKED_MEAT?'Ate cooked meat':'Ate raw meat');
-}
-
-function updateSurvival(dt){
-  player.hunger=Math.max(0,player.hunger-dt/72);
-  if(player.hunger>=8&&player.health<10){
-    player.regenTimer+=dt;
-    if(player.regenTimer>=4){player.health=Math.min(10,player.health+1);player.hunger=Math.max(0,player.hunger-.3);player.regenTimer=0;}
-  }else player.regenTimer=0;
-  if(player.hunger<=0){
-    player.starveTimer+=dt;
-    if(player.starveTimer>=5){player.health=Math.max(0,player.health-1);player.starveTimer=0;}
-  }else player.starveTimer=0;
-  if(player.health<=0&&Date.now()-lastDeathSent>1500){lastDeathSent=Date.now();socket.emit('playerDied',{room:currentRoom});}
-}
-
-function canCraft(r){return Object.entries(r.needs).every(([id,n])=>(inv[id]||0)>=n);}
-function craft(r){
-  if(!canCraft(r)){showToast('Missing ingredients');return;}
-  for(const [id,n] of Object.entries(r.needs)){inv[id]-=n;if(inv[id]<=0)delete inv[id];}
-  const before=inv[r.out]||0;inv[r.out]=before+r.qty;
-  if(isTool(r.out)&&before===0)toolState[r.out]=TOOL_MAX[r.out];
-  showToast('Crafted '+r.name);
-}
-
-function openNearestFurnace(){
-  let best=null,bd=TILE*5;
-  for(const f of Object.values(furnaces)){
-    const d=Math.hypot((f.x+.5)*TILE-player.x,(f.y+.5)*TILE-player.y);
-    if(d<bd){bd=d;best=f;}
-  }
-  if(best)socket.emit('openFurnace',{room:currentRoom,x:best.x,y:best.y});else showToast('No furnace nearby');
-}
-
-function drawBlock(id,x,y){
-  if(id===T.AIR)return;
-  if(id===T.WATER){ctx.fillStyle='rgba(47,130,220,.72)';ctx.fillRect(x,y,TILE,TILE);return;}
-  if(id===T.GRASS){ctx.fillStyle='#8b5a31';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#59aa3e';ctx.fillRect(x,y,TILE,7);}
-  else if(id===T.DIRT){ctx.fillStyle='#88572f';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#6e421f';ctx.fillRect(x+5,y+6,4,3);ctx.fillRect(x+15,y+16,3,3);}
-  else if(id===T.STONE||id===T.COAL||id===T.IRON){ctx.fillStyle='#777b80';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#62666b';ctx.fillRect(x+4,y+5,5,3);ctx.fillRect(x+14,y+14,5,4);if(id===T.COAL){ctx.fillStyle='#27282a';ctx.fillRect(x+5,y+4,6,6);ctx.fillRect(x+14,y+13,6,6);}if(id===T.IRON){ctx.fillStyle='#c48668';ctx.fillRect(x+5,y+4,6,5);ctx.fillRect(x+14,y+13,5,6);}}
-  else if(id===T.WOOD){ctx.fillStyle='#99612e';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#6c401d';ctx.fillRect(x+5,y,3,TILE);ctx.fillRect(x+16,y,2,TILE);}
-  else if(id===T.LEAF){ctx.fillStyle='#34883d';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#276d31';ctx.fillRect(x+4,y+4,5,5);ctx.fillRect(x+14,y+13,5,4);}
-  else if(id===T.SAND){ctx.fillStyle='#d7c17b';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#b6a362';ctx.fillRect(x+5,y+7,3,2);ctx.fillRect(x+15,y+16,4,2);}
-  else if(id===T.SNOW){ctx.fillStyle='#edf4f8';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#cbdce8';ctx.fillRect(x,y+7,TILE,TILE-7);}
-  else if(id===T.CACTUS){ctx.fillStyle='#3a9548';ctx.fillRect(x+4,y,TILE-8,TILE);ctx.fillStyle='#267437';ctx.fillRect(x+8,y,2,TILE);}
-  else if(id===T.CRAFT){ctx.fillStyle='#99602f';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#c98b4d';ctx.fillRect(x+2,y+2,TILE-4,6);ctx.fillStyle='#60371d';ctx.fillRect(x+4,y+12,5,8);ctx.fillRect(x+15,y+12,5,8);}
-  else if(id===T.FURNACE){ctx.fillStyle='#686c72';ctx.fillRect(x,y,TILE,TILE);ctx.fillStyle='#33363a';ctx.fillRect(x+4,y+11,TILE-8,9);ctx.fillStyle='#b16a2b';ctx.fillRect(x+8,y+15,TILE-16,3);}
-  else if(id===T.CHEST){ctx.fillStyle='#a76a2f';ctx.fillRect(x+1,y+4,TILE-2,TILE-5);ctx.fillStyle='#d29442';ctx.fillRect(x+1,y+4,TILE-2,5);ctx.fillStyle='#e5c36c';ctx.fillRect(x+10,y+10,4,5);}
-  else if(id===T.TORCH){ctx.fillStyle='#8e5a2c';ctx.fillRect(x+10,y+8,4,16);ctx.fillStyle='#ffdb55';ctx.fillRect(x+8,y+3,8,8);ctx.fillStyle='#ff8f35';ctx.fillRect(x+10,y+5,4,5);}
-  else if(id===T.GLASS){ctx.fillStyle='rgba(190,225,240,.35)';ctx.fillRect(x,y,TILE,TILE);ctx.strokeStyle='rgba(225,245,255,.8)';ctx.strokeRect(x+1,y+1,TILE-2,TILE-2);}
-  else if(id===T.BED){ctx.fillStyle='#754228';ctx.fillRect(x,y+15,TILE,7);ctx.fillStyle='#d54b4b';ctx.fillRect(x,y+5,TILE,11);ctx.fillStyle='#eee';ctx.fillRect(x,y+5,8,11);}
-  ctx.strokeStyle='rgba(0,0,0,.08)';ctx.strokeRect(x+.5,y+.5,TILE-1,TILE-1);
-}
-function drawItemIcon(id,x,y,size=24){
-  if(blockInfo[id]){ctx.save();ctx.translate(x,y);ctx.scale(size/TILE,size/TILE);drawBlock(id,0,0);ctx.restore();return;}
-  const it=itemInfo[id];ctx.fillStyle='#c69a58';ctx.fillRect(x,y,size,size);ctx.strokeStyle='rgba(0,0,0,.4)';ctx.strokeRect(x+.5,y+.5,size-1,size-1);
-  ctx.fillStyle='#151515';ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=`bold ${Math.max(11,size*.5)}px monospace`;ctx.fillText(it?.mark||'?',x+size/2,y+size/2);ctx.textAlign='left';ctx.textBaseline='alphabetic';
-}
-function skyColor(t){
-  let sun=Math.sin(t*Math.PI*2)*.5+.5;sun=Math.max(.05,Math.min(1,sun*1.15));
-  const a=[18,25,54],b=[105,188,245],lerp=(x,y,p)=>Math.round(x+(y-x)*p);
-  return `rgb(${lerp(a[0],b[0],sun)},${lerp(a[1],b[1],sun)},${lerp(a[2],b[2],sun)})`;
-}
-
-function drawMob(m){
-  const x=Math.round(m.x-cam.x),y=Math.round(m.y-cam.y);
-  ctx.save();ctx.translate(x,y);if((m.vx||1)<0)ctx.scale(-1,1);
-  if(m.type==='pig'){ctx.fillStyle=m.hurt>0?'#fff':'#df8c8c';ctx.fillRect(-11,-7,18,13);ctx.fillRect(5,-4,7,8);ctx.fillStyle='#6d3d45';ctx.fillRect(8,-1,3,3);}
-  else if(m.type==='cow'){ctx.fillStyle=m.hurt>0?'#fff':'#8e674f';ctx.fillRect(-12,-8,19,15);ctx.fillStyle='#eee';ctx.fillRect(-5,-6,6,6);ctx.fillStyle='#b98c6a';ctx.fillRect(6,-5,7,9);ctx.fillStyle='#111';ctx.fillRect(9,-2,2,2);}
-  else if(m.type==='sheep'){ctx.fillStyle=m.hurt>0?'#fff':'#e9e9e9';ctx.fillRect(-12,-8,19,15);ctx.fillStyle='#888';ctx.fillRect(6,-5,7,9);ctx.fillStyle='#111';ctx.fillRect(9,-2,2,2);}
-  else if(m.type==='zombie'){ctx.fillStyle=m.hurt>0?'#fff':'#4c9b57';ctx.fillRect(-7,-14,14,10);ctx.fillStyle='#415c9d';ctx.fillRect(-7,-4,14,13);ctx.fillStyle='#26375f';ctx.fillRect(-7,9,6,5);ctx.fillRect(1,9,6,5);ctx.fillStyle='#111';ctx.fillRect(3,-10,2,2);}
-  else if(m.type==='slime'){ctx.fillStyle=m.hurt>0?'#fff':'#59bb67';ctx.fillRect(-10,-7,20,14);ctx.fillStyle='#17391e';ctx.fillRect(-5,-2,3,3);ctx.fillRect(3,-2,3,3);}
-  ctx.restore();
-  if(m.hostile){ctx.fillStyle='rgba(0,0,0,.5)';ctx.fillRect(x-12,y-m.h/2-8,24,3);ctx.fillStyle='#e95d5d';ctx.fillRect(x-12,y-m.h/2-8,24*Math.max(0,m.hp/m.maxHp),3);}
-}
-function drawDrop(d){
-  const x=d.x-cam.x,y=d.y-cam.y;ctx.save();ctx.translate(x,y);ctx.rotate(Date.now()/700);drawItemIcon(Number(d.item),-7,-7,14);ctx.restore();
-}
-function wrapText(s,n=24){const words=String(s).split(/\s+/),out=[];let line='';for(const w of words){if((line+(line?' ':'')+w).length<=n)line+=(line?' ':'')+w;else{if(line)out.push(line);line=w;}if(out.length>=3)break;}if(line&&out.length<3)out.push(line);return out.slice(0,3);}
-function drawBubble(id,x,y){
-  const b=speechBubbles[id];if(!b)return;if(Date.now()>b.until){delete speechBubbles[id];return;}
-  const lines=wrapText(b.text),lh=13;ctx.font='11px monospace';let tw=0;for(const l of lines)tw=Math.max(tw,ctx.measureText(l).width);
-  const bw=Math.min(205,Math.max(42,tw+14)),bh=lines.length*lh+10,bx=Math.max(4,Math.min(W-bw-4,x-bw/2)),by=Math.max(4,y-54-bh);
-  ctx.fillStyle='rgba(255,255,255,.96)';ctx.strokeStyle='#222';ctx.fillRect(bx,by,bw,bh);ctx.strokeRect(bx+.5,by+.5,bw-1,bh-1);
-  ctx.fillStyle='#111';ctx.textAlign='center';for(let i=0;i<lines.length;i++)ctx.fillText(lines[i],bx+bw/2,by+14+i*lh);ctx.textAlign='left';
-}
-function drawPlayerSprite(x,y,dir,remote=false){
-  ctx.save();ctx.translate(x,y);if(dir<0)ctx.scale(-1,1);
-  ctx.fillStyle='#4b2c1b';ctx.fillRect(-7,-15,14,7);ctx.fillStyle='#d8a17c';ctx.fillRect(-7,-8,14,9);
-  ctx.fillStyle=remote?'#3a9b69':'#2f63bd';ctx.fillRect(-7,1,14,10);ctx.fillStyle=remote?'#215f42':'#253f7b';ctx.fillRect(-7,11,6,4);ctx.fillRect(1,11,6,4);ctx.fillStyle='#111';ctx.fillRect(2,-5,2,2);ctx.restore();
-}
-
-function renderLighting(){
-  let sun=Math.sin(timeOfDay*Math.PI*2);let night=Math.max(0,.52-(sun*.5+.5)*.48);
-  let depth=Math.max(0,(player.y/TILE-37)/45)*.42;let alpha=Math.min(.78,night+depth);
-  if(alpha<.03)return;
-  lctx.clearRect(0,0,W,H);lctx.globalCompositeOperation='source-over';lctx.fillStyle=`rgba(4,7,15,${alpha})`;lctx.fillRect(0,0,W,H);
-  lctx.globalCompositeOperation='destination-out';
-  const punch=(x,y,r,str=1)=>{const g=lctx.createRadialGradient(x,y,0,x,y,r);g.addColorStop(0,`rgba(0,0,0,${str})`);g.addColorStop(1,'rgba(0,0,0,0)');lctx.fillStyle=g;lctx.fillRect(x-r,y-r,r*2,r*2);};
-  if(heldItem()===I.TORCH)punch(player.x-cam.x,player.y-cam.y,120,.85);
-  const x0=Math.max(0,Math.floor(cam.x/TILE)-1),x1=Math.min(WORLD_W,Math.ceil((cam.x+W)/TILE)+1),y0=Math.max(0,Math.floor(cam.y/TILE)-1),y1=Math.min(WORLD_H,Math.ceil((cam.y+H)/TILE)+1);
-  for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)if(world[y][x]===T.TORCH)punch((x+.5)*TILE-cam.x,(y+.5)*TILE-cam.y,145,1);
-  for(const f of Object.values(furnaces))if(f.job)punch((f.x+.5)*TILE-cam.x,(f.y+.5)*TILE-cam.y,115,.85);
-  lctx.globalCompositeOperation='source-over';ctx.drawImage(lightCanvas,0,0,W,H);
-}
-
-function render(){
-  ctx.fillStyle=skyColor(timeOfDay);ctx.fillRect(0,0,W,H);
-  const sun=Math.max(0,Math.sin(timeOfDay*Math.PI*2));
-  const ang=timeOfDay*Math.PI*2-Math.PI,sx=W*.5+Math.cos(ang)*W*.45,sy=H*.75+Math.sin(ang)*H*.62;
-  ctx.fillStyle=sun>.1?'#ffe06a':'#dbe5ff';ctx.beginPath();ctx.arc(sx,sy,sun>.1?22:16,0,Math.PI*2);ctx.fill();
-
-  const x0=Math.max(0,Math.floor(cam.x/TILE)-1),x1=Math.min(WORLD_W,Math.ceil((cam.x+W)/TILE)+1),y0=Math.max(0,Math.floor(cam.y/TILE)-1),y1=Math.min(WORLD_H,Math.ceil((cam.y+H)/TILE)+1);
-  for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)drawBlock(world[y][x],x*TILE-cam.x,y*TILE-cam.y);
-
-  for(const d of Object.values(drops))drawDrop(d);
-  for(const m of Object.values(mobs))drawMob(m);
-
-  for(const rp of Object.values(remotePlayers)){
-    const x=Math.round(rp.x-cam.x),y=Math.round(rp.y-cam.y);drawPlayerSprite(x,y,rp.dir||1,true);
-    const name=rp.name||'Player';ctx.font='11px monospace';const tw=ctx.measureText(name).width+8;ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(x-tw/2,y-34,tw,15);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.fillText(name,x,y-23);ctx.textAlign='left';drawBubble(rp.id,x,y);
-  }
-  const px=Math.round(player.x-cam.x),py=Math.round(player.y-cam.y);drawPlayerSprite(px,py,player.dir,false);drawBubble(socket.id,px,py);
-
-  const {tx,ty}=targetTile();if(inReach(tx,ty)){ctx.strokeStyle='rgba(255,255,255,.8)';ctx.lineWidth=2;ctx.strokeRect(tx*TILE-cam.x+1,ty*TILE-cam.y+1,TILE-2,TILE-2);if(mining.p>0){ctx.fillStyle='rgba(255,255,255,.22)';ctx.fillRect(tx*TILE-cam.x,ty*TILE-cam.y,TILE*Math.min(1,mining.p),TILE);}}
-
-  renderLighting();
-  drawUI();
-}
-
-function drawUI(){
-  for(let i=0;i<10;i++){const x=17+i*17,y=70;ctx.fillStyle=i<Math.ceil(player.health)?'#e54d51':'#4c2527';ctx.fillRect(x,y,6,6);ctx.fillRect(x+7,y,6,6);ctx.fillRect(x+3,y+5,7,8);}
-  for(let i=0;i<10;i++){const x=17+i*17,y=91;ctx.fillStyle=i<Math.ceil(player.hunger)?'#d58a38':'#4b3623';ctx.fillRect(x+2,y,8,4);ctx.fillRect(x,y+4,12,6);ctx.fillRect(x+3,y+10,6,3);}
-
-  const slot=45,gap=4,total=10*slot+9*gap,sx=(W-total)/2,sy=H-62;
-  for(let i=0;i<10;i++){
-    const id=hotbar[i];ctx.fillStyle=i===selected?'rgba(255,225,105,.94)':'rgba(15,17,20,.78)';ctx.fillRect(sx+i*(slot+gap),sy,slot,slot);ctx.strokeStyle='rgba(255,255,255,.48)';ctx.strokeRect(sx+i*(slot+gap)+.5,sy+.5,slot-1,slot-1);
-    drawItemIcon(id,sx+i*(slot+gap)+11,sy+9,23);ctx.fillStyle='#fff';ctx.font='10px monospace';ctx.fillText(i===9?'0':String(i+1),sx+i*(slot+gap)+3,sy+11);
-    ctx.textAlign='right';ctx.fillText(String(inv[id]||0),sx+i*(slot+gap)+slot-4,sy+slot-4);ctx.textAlign='left';
-    if(isTool(id)&&(inv[id]||0)>0){const d=(toolState[id]??TOOL_MAX[id])/TOOL_MAX[id];ctx.fillStyle='#111';ctx.fillRect(sx+i*(slot+gap)+4,sy+slot-8,slot-8,3);ctx.fillStyle=d>.35?'#82d36b':'#e46b5f';ctx.fillRect(sx+i*(slot+gap)+4,sy+slot-8,(slot-8)*Math.max(0,d),3);}
-  }
-  ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(W/2-105,sy-25,210,19);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='11px monospace';ctx.fillText(itemName(heldItem()),W/2,sy-12);ctx.textAlign='left';
-
-  ctx.fillStyle='rgba(0,0,0,.52)';ctx.fillRect(W-170,54,158,54);ctx.fillStyle='#fff';ctx.font='11px monospace';ctx.fillText(`X ${Math.floor(player.x/TILE)} Y ${Math.floor(player.y/TILE)}`,W-160,70);ctx.fillText(`PVP ${worldSettings.pvp?'ON':'OFF'}`,W-160,86);ctx.fillText(`Time ${String(Math.floor((timeOfDay*24+6)%24)).padStart(2,'0')}:00`,W-160,102);
-
-  if(Date.now()<toastUntil){ctx.font='12px monospace';const tw=ctx.measureText(toast).width+20;ctx.fillStyle='rgba(0,0,0,.72)';ctx.fillRect(W/2-tw/2,35,tw,27);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.fillText(toast,W/2,53);ctx.textAlign='left';}
-
-  if(craftingOpen)drawCrafting();
-  if(inventoryOpen)drawInventory();
-  if(currentChest)drawChest();
-  if(currentFurnace)drawFurnace();
-  if(playerListOpen)drawPlayerList();
-}
-
-function panel(x,y,w,h,title){
-  ctx.fillStyle='rgba(8,10,14,.96)';ctx.fillRect(x,y,w,h);ctx.strokeStyle='#9a9da4';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,w-1,h-1);ctx.fillStyle='#ffe169';ctx.font='bold 20px monospace';ctx.fillText(title,x+18,y+29);
-}
-function drawCrafting(){
-  const w=Math.min(690,W-40),h=Math.min(620,H-70),x=(W-w)/2,y=(H-h)/2;panel(x,y,w,h,'CRAFTING');
-  ctx.fillStyle='#bbb';ctx.font='11px monospace';ctx.fillText('Click recipe to craft · ESC closes',x+18,y+49);
-  const start=y+78,row=31;
-  for(let i=0;i<recipes.length;i++){
-    const r=recipes[i],yy=start+i*row,ok=canCraft(r);ctx.fillStyle=i===craftingSelected?'rgba(255,225,105,.15)':'rgba(255,255,255,.035)';ctx.fillRect(x+15,yy-19,w-30,row-2);
-    drawItemIcon(r.out,x+22,yy-15,22);ctx.fillStyle=ok?'#fff':'#777';ctx.font='12px monospace';ctx.fillText(r.name,x+54,yy);
-    const need=Object.entries(r.needs).map(([id,n])=>`${itemName(+id)} ${inv[id]||0}/${n}`).join(' · ');ctx.fillStyle=ok?'#9ddd8f':'#dc8585';ctx.font='10px monospace';ctx.fillText(need,x+250,yy);
-  }
-}
-function inventoryEntries(){return Object.entries(inv).filter(([,n])=>n>0).map(([id,n])=>[Number(id),n]).sort((a,b)=>itemName(a[0]).localeCompare(itemName(b[0])));}
-function drawInventory(){
-  const w=610,h=470,x=(W-w)/2,y=(H-h)/2;panel(x,y,w,h,'INVENTORY / EQUIPMENT');
-  ctx.fillStyle='#bbb';ctx.font='11px monospace';ctx.fillText('Click an item to assign it to the currently selected hotbar slot.',x+18,y+50);
-  const entries=inventoryEntries();const cols=2,rowH=36;
-  entries.slice(0,20).forEach(([id,n],i)=>{const col=i%cols,row=Math.floor(i/cols),xx=x+18+col*290,yy=y+85+row*rowH;ctx.fillStyle='rgba(255,255,255,.045)';ctx.fillRect(xx,yy-23,275,31);drawItemIcon(id,xx+5,yy-19,24);ctx.fillStyle='#fff';ctx.font='11px monospace';ctx.fillText(`${itemName(id)} ×${n}`,xx+38,yy-4);if(isTool(id)){ctx.fillStyle='#aaa';ctx.fillText(`Dur ${toolState[id]??TOOL_MAX[id]}/${TOOL_MAX[id]}`,xx+150,yy-4);}});
-}
-function drawChest(){
-  const w=650,h=450,x=(W-w)/2,y=(H-h)/2;panel(x,y,w,h,'SHARED CHEST');
-  ctx.fillStyle='#bbb';ctx.font='11px monospace';ctx.fillText('Click left column to deposit 1 · click right column to withdraw 1',x+18,y+49);
-  ctx.fillStyle='#ffe169';ctx.fillText('YOUR INVENTORY',x+24,y+76);ctx.fillText('CHEST',x+355,y+76);
-  const a=inventoryEntries().slice(0,14),b=Object.entries(currentChest.items||{}).filter(([,n])=>n>0).map(([id,n])=>[Number(id),n]).slice(0,14);
-  a.forEach(([id,n],i)=>drawStorageRow(x+20,y+105+i*24,280,id,n));
-  b.forEach(([id,n],i)=>drawStorageRow(x+350,y+105+i*24,280,id,n));
-}
-function drawStorageRow(x,y,w,id,n){ctx.fillStyle='rgba(255,255,255,.05)';ctx.fillRect(x,y-17,w,21);drawItemIcon(id,x+3,y-15,17);ctx.fillStyle='#fff';ctx.font='10px monospace';ctx.fillText(`${itemName(id)} ×${n}`,x+27,y);}
-function drawFurnace(){
-  const w=520,h=360,x=(W-w)/2,y=(H-h)/2;panel(x,y,w,h,'FURNACE');
-  ctx.fillStyle='#bbb';ctx.font='11px monospace';ctx.fillText('Timed smelting uses 1 input + 1 coal.',x+18,y+49);
-  const rec=[['meat','Raw Meat → Cooked Meat',I.RAW_MEAT],['iron','Iron Ore → Iron Ingot',T.IRON],['glass','Sand → Glass',T.SAND]];
-  rec.forEach((r,i)=>{const yy=y+95+i*55;ctx.fillStyle='rgba(255,255,255,.05)';ctx.fillRect(x+25,yy-24,310,42);ctx.fillStyle='#fff';ctx.font='12px monospace';ctx.fillText(r[1],x+40,yy);ctx.fillStyle='#aaa';ctx.font='10px monospace';ctx.fillText(`Have ${inv[r[2]]||0} + Coal ${inv[T.COAL]||0}`,x+40,yy+13);ctx.fillStyle='#454b55';ctx.fillRect(x+360,yy-24,125,42);ctx.fillStyle='#ffe169';ctx.textAlign='center';ctx.fillText('START',x+422,yy+1);ctx.textAlign='left';});
-  if(currentFurnace.job){const j=currentFurnace.job,progress=Math.max(0,Math.min(1,(Date.now()-j.startedAt)/(j.finishAt-j.startedAt)));ctx.fillStyle='#222';ctx.fillRect(x+25,y+272,300,16);ctx.fillStyle='#f0a34a';ctx.fillRect(x+25,y+272,300*progress,16);ctx.fillStyle='#fff';ctx.fillText(`Smelting ${j.recipe} ${Math.round(progress*100)}%`,x+25,y+306);}
-  const outs=Object.entries(currentFurnace.output||{}).filter(([,n])=>n>0);ctx.fillStyle='#ffe169';ctx.fillText('OUTPUT',x+350,y+276);ctx.fillStyle='#fff';ctx.fillText(outs.length?outs.map(([id,n])=>`${itemName(+id)} ×${n}`).join(', '):'Empty',x+350,y+298);ctx.fillStyle='#454b55';ctx.fillRect(x+350,y+316,135,28);ctx.fillStyle='#ffe169';ctx.textAlign='center';ctx.fillText('COLLECT',x+417,y+335);ctx.textAlign='left';
-}
-function drawPlayerList(){
-  const w=400,h=Math.min(390,135+remoteList.length*28),x=(W-w)/2,y=65;panel(x,y,w,h,'PLAYERS');
-  ctx.fillStyle='#bbb';ctx.font='11px monospace';ctx.fillText(`Owner: ${ownerName} · PVP: ${worldSettings.pvp?'ON':'OFF'}`,x+18,y+49);
-  const list=remoteList.length?remoteList:[{name:nameInput.value,health:player.health,hunger:player.hunger}];
-  list.forEach((p,i)=>{const yy=y+82+i*27;ctx.fillStyle=p.name===ownerName?'#ffe169':'#fff';ctx.fillText(`${p.name}${p.name===ownerName?'  ★':''}`,x+25,yy);ctx.fillStyle='#aaa';ctx.fillText(`HP ${Math.ceil(p.health||0)}/10   Hunger ${Math.ceil(p.hunger||0)}/10`,x+190,yy);});
-  ctx.fillStyle='#8fbbe8';ctx.fillText('Chat commands: /help /players /spawn',x+18,h+y-33);ctx.fillText('Owner: /kick NAME /setspawn /pvp on|off /save',x+18,h+y-17);
-}
-
-function handleMenuClick(mx,my,button){
-  if(button!==0)return menuOpen();
-  if(craftingOpen){
-    const w=Math.min(690,W-40),h=Math.min(620,H-70),x=(W-w)/2,y=(H-h)/2,start=y+78,row=31;
-    const i=Math.floor((my-(start-19))/row);if(mx>=x+15&&mx<=x+w-15&&i>=0&&i<recipes.length){craftingSelected=i;craft(recipes[i]);}
-    return true;
-  }
-  if(inventoryOpen){
-    const w=610,h=470,x=(W-w)/2,y=(H-h)/2,entries=inventoryEntries().slice(0,20),rowH=36;
-    for(let i=0;i<entries.length;i++){const col=i%2,row=Math.floor(i/2),xx=x+18+col*290,yy=y+85+row*rowH;if(mx>=xx&&mx<=xx+275&&my>=yy-23&&my<=yy+8){hotbar[selected]=entries[i][0];showToast(`${itemName(entries[i][0])} assigned to slot ${selected===9?0:selected+1}`);break;}}
-    return true;
-  }
-  if(currentChest){
-    const w=650,h=450,x=(W-w)/2,y=(H-h)/2,a=inventoryEntries().slice(0,14),b=Object.entries(currentChest.items||{}).filter(([,n])=>n>0).map(([id,n])=>[Number(id),n]).slice(0,14);
-    for(let i=0;i<a.length;i++){const yy=y+105+i*24;if(mx>=x+20&&mx<=x+300&&my>=yy-17&&my<=yy+4){socket.emit('chestTransfer',{room:currentRoom,x:currentChest.x,y:currentChest.y,item:a[i][0],direction:'deposit',inventory:{...inv}});return true;}}
-    for(let i=0;i<b.length;i++){const yy=y+105+i*24;if(mx>=x+350&&mx<=x+630&&my>=yy-17&&my<=yy+4){socket.emit('chestTransfer',{room:currentRoom,x:currentChest.x,y:currentChest.y,item:b[i][0],direction:'withdraw',inventory:{...inv}});return true;}}
-    return true;
-  }
-  if(currentFurnace){
-    const w=520,h=360,x=(W-w)/2,y=(H-h)/2,keys=['meat','iron','glass'];
-    for(let i=0;i<3;i++){const yy=y+95+i*55;if(mx>=x+360&&mx<=x+485&&my>=yy-24&&my<=yy+18){socket.emit('startSmelt',{room:currentRoom,x:currentFurnace.x,y:currentFurnace.y,recipe:keys[i],inventory:{...inv}});return true;}}
-    if(mx>=x+350&&mx<=x+485&&my>=y+316&&my<=y+344)socket.emit('collectFurnace',{room:currentRoom,x:currentFurnace.x,y:currentFurnace.y});
-    return true;
-  }
-  return false;
-}
-
-let last=performance.now();
-function loop(now){
-  const dt=Math.min(.033,(now-last)/1000);last=now;
-  const left=keys.a||keys.arrowleft,right=keys.d||keys.arrowright;
-  player.vx=menuOpen()?0:((right?MOVE:0)-(left?MOVE:0));if(player.vx)player.dir=Math.sign(player.vx);
-  if(!menuOpen()){moveAndCollide(dt);mine(dt);updateSurvival(dt);}else mining.p=0;
-
-  cam.x+=(player.x-W*.5-cam.x)*Math.min(1,dt*7);cam.y+=(player.y-H*.56-cam.y)*Math.min(1,dt*7);
-  cam.x=Math.max(0,Math.min(WORLD_W*TILE-W,cam.x));cam.y=Math.max(0,Math.min(WORLD_H*TILE-H,cam.y));
-
-  if(currentRoom&&now-lastMoveSend>50){
-    socket.emit('playerMove',{room:currentRoom,x:player.x,y:player.y,vx:player.vx,vy:player.vy,dir:player.dir});lastMoveSend=now;
-  }
-  if(currentRoom&&now-lastStateSend>2000){
-    socket.emit('playerState',{room:currentRoom,x:player.x,y:player.y,health:player.health,hunger:player.hunger,inventory:{...inv},toolState:{...toolState},hotbar:[...hotbar],spawnX:player.spawnX,spawnY:player.spawnY});lastStateSend=now;
-  }
-  render();requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);
-})();
-</script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/client.js"></script>
 </body>
 </html>

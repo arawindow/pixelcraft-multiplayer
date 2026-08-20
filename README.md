@@ -1,93 +1,101 @@
-# PixelCraft Survival — Complete Multiplayer Upgrade
+# Blockcraft Complete
 
-This build includes the requested systems together:
+A persistent multiplayer voxel survival sandbox for GitHub + Railway.
 
-- Persistent PostgreSQL worlds and player saves.
-- Shared physical item drops for mined blocks, mob loot, and player death drops.
-- Pickaxes, axes, swords, equipment/hotbar assignment, mining requirements, and durability.
-- Server-authoritative passive animals and hostile night mobs.
-- Death/respawn with inventory dropped into the world.
-- Timed shared furnaces:
-  - Raw Meat + Coal -> Cooked Meat
-  - Iron Ore + Coal -> Iron Ingot
-  - Sand + Coal -> Glass
-- Persistent shared chests.
-- Torch lighting and darker caves/night.
-- Improved biome-style generation: forest/plains/desert/snow/mountains/beaches.
-- Beds set persistent player respawn points; if all online players sleep at night, morning is skipped.
-- TAB player list.
-- World owner/admin commands:
-  - /help
-  - /players
-  - /spawn
-  - /kick NAME
-  - /setspawn
-  - /pvp on
-  - /pvp off
-  - /save
-- Multiplayer chat and speech bubbles.
+This project implements original Blockcraft versions of:
+- Dropped item entities and pickup
+- Shared synchronized chests
+- Timed server-side furnaces
+- Farmland/crops and crop growth
+- Animals
+- Hostile mobs with chase AI
+- Boss encounter
+- Armor/equipment state
+- Bows and projectiles
+- Water/lava blocks with compact server-side spreading fluid simulation
+- Dynamic day/night lighting and emissive blocks
+- Weather state
+- Procedural terrain, caves, ores, trees
+- Generated village structures and wandering villager NPCs
+- Alternate dimensions
+- Portals
+- Wire/lamp automation state
+- XP/achievement progression and compact enchanting
+- Potion consumption/effects
+- Boats and minecarts
+- Fishing
+- Persistent multiplayer players/world/entities
+- Multiplayer chat + speech bubbles
+- Health/hunger
+- Crafting
+- Mining and block placement
 
-## Important upgrade note
+## Files
 
-This version extends your existing PostgreSQL schema automatically using `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so you do not need to manually recreate the database.
+```text
+.gitignore
+package.json
+railway.json
+README.md
+server.js
+index.html
+style.css
+client.js
+```
 
-Existing saved worlds can still load. New worlds get the improved world generation and server-synced mobs.
+## Railway
 
-## Deploy to Railway
+1. Push these files to GitHub.
+2. Connect that repository to Railway.
+3. Add a Railway Volume mounted at `/data`.
+4. Add variable `DATA_DIR=/data`.
+5. Generate a public domain.
+6. Railway runs `npm start`.
 
-1. Replace the files in your GitHub repository with:
-   - index.html
-   - server.js
-   - package.json
-   - README.md
-   - start-windows.bat
-2. Commit/push.
-3. Railway should redeploy automatically.
-4. Keep your existing `DATABASE_URL` variable connected to PostgreSQL.
-5. Check Railway logs. You should see:
-   `PostgreSQL persistence ready.`
+Persistent state is stored at `/data/world.json`.
 
 ## Controls
 
-- A / D or arrow keys: move
-- Space: jump
+- WASD: move
+- Space: jump/swim up
+- Shift: sprint
 - Left click: mine / attack
-- Right click: place / interact with chest, furnace, bed
-- 1–0: hotbar
-- Mouse wheel: hotbar
-- C: crafting
-- I: inventory/equipment; click an item to assign it to the selected hotbar slot
-- E: eat
-- F: open nearest furnace
-- Enter: chat
-- Tab: player list
-- Esc: close menu
+- Right click: place / use
+- 1-9: hotbar
+- E: inventory/crafting
+- Enter: multiplayer chat
+- G: achievements
+- F: bow / vehicle / fishing rod / food action
+- R: healing potion
+- Q: drop selected item
 
-## Tool progression
+## Scope
 
-Stone and coal require at least a Wood Pickaxe.
-Iron ore requires at least a Stone Pickaxe.
-Axes speed up wood-like blocks.
-Swords deal more mob/PVP damage.
-Tools lose durability and eventually break.
+This is an original browser voxel game. It does not use Minecraft textures, sounds, code, maps, UI assets, or other copyrighted game assets. The implemented systems are compact browser-game equivalents, not a claim of feature-for-feature parity with the commercial Minecraft codebase.
 
-## Persistence
 
-The server persists:
-- blocks
-- terrain
-- time
-- mobs
-- item drops
-- chests and contents
-- furnaces and outputs/jobs
-- beds
-- owner/settings/world spawn
-- player inventory
-- health/hunger
-- position
-- tool durability
-- hotbar/equipment layout
-- personal respawn point
+## Semi-realistic graphics pack
 
-Player identity is still based on the typed player name; there is no login/account authentication yet.
+This build includes original 96×96 textured voxel materials in `assets/textures/`, per-face grass/log materials, bump mapping, anisotropic filtering, ACES filmic tone mapping, soft 2048px shadows, atmospheric fog, weather-dependent lighting, transparent water/glass/ice, and emissive lava/portal/light materials.
+
+All included textures are original generated assets for Blockcraft and do not use Minecraft texture files.
+
+
+## Performance architecture
+
+The semi-realistic graphics are retained, but the browser renderer has been optimized:
+
+- 16×16 chunk rendering instead of one `THREE.Mesh` per block
+- up to three meshes per chunk: opaque, transparent and emissive
+- only visible voxel faces are emitted into chunk geometry
+- 1024×512 padded terrain texture atlas + matching height atlas
+- block edits rebuild only their affected chunk and edge neighbor chunks
+- circular four-chunk render distance with streamed chunk loading/unloading
+- chunk build queue to prevent large frame stalls
+- nearby-only shadow casting
+- 1536px soft shadow map instead of rendering all blocks into a 2048px map
+- adaptive pixel ratio between 0.85 and 1.5 based on measured FPS
+- entity render-distance culling
+- entity/player interpolation between network updates
+- player network movement throttled to about 12.5 updates/second
+- server entity simulation snapshots reduced to 5 updates/second
