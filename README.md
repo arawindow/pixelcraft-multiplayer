@@ -137,3 +137,19 @@ The renderer itself remains the conservative working Mesh-per-visible-block rend
 - parsed block coordinates are cached;
 - raycasts only inspect nearby chunk meshes;
 - visual quality, textures, bump maps, lighting, shadows and render distance are unchanged.
+
+
+## Alive world expansion
+
+- Decorative vegetation: flowers, tall grass, mushrooms, reeds, berry bushes, dead bushes and cave crystals.
+- Rare landmarks: ruined watchtowers, abandoned campsites and ancient trees.
+- Procedural roads between existing village sites.
+- Villager routines and ambient movement.
+- Ambient birds and butterflies in suitable biomes.
+- Detailed multi-part textured animal models instead of single colored cubes.
+- Leg and wing animations for animals and birds.
+- Original generated pixel-art texture packs for mobs and vegetation.
+- Environmental sway on nearby plants.
+- Ambient synthesized sounds.
+- Discovery notifications and XP rewards.
+- Landmark loot chests.

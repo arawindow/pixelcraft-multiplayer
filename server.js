@@ -24,7 +24,7 @@ const BLOCKS = [
   "coal_ore","iron_ore","gold_ore","diamond_ore","water","lava","farmland","wheat",
   "torch","crafting_table","furnace","chest","rail","powered_rail","wire","lamp",
   "portal","obsidian","snow","ice","brick",
-  "door","door_open","fence","stairs","slab","ladder"
+  "door","door_open","fence","stairs","slab","ladder","flower_red","flower_yellow","tall_grass","mushroom_red","mushroom_brown","reeds","berry_bush","dead_bush","crystal","road","campfire"
 ];
 const PLACEABLE = new Set(BLOCKS.filter(x=>x!=="door_open"));
 const DIMENSIONS = ["overworld","ember","void"];
@@ -88,6 +88,11 @@ const RECIPES = {
 function noise(x,z,s=0){
   return Math.sin((x+s)*.13)*2.2 + Math.cos((z-s)*.11)*1.9 + Math.sin((x+z+s)*.055)*1.5;
 }
+
+function hash2(x,z,seed=0){
+  const v=Math.sin(x*127.1+z*311.7+seed*74.7)*43758.5453123;
+  return v-Math.floor(v);
+}
 function biomeAt(x,z,seed){
   const v=Math.sin((x+seed)*.045)+Math.cos((z-seed)*.038);
   if(v>1.05)return "snow";
@@ -105,7 +110,7 @@ function defaultPlayer(name){
     equipment:{head:null,chest:null,legs:null,feet:null},
     durability:{wood_pickaxe:60,wood_sword:60,bow:384},
     effects:[], achievements:[], spawn:{dimension:"overworld",pos:[0,8,0]},
-    deaths:0
+    deaths:0, discovered:[]
   };
 }
 function newState(){
@@ -117,14 +122,14 @@ function newState(){
       void:{blocks:{},time:.82,weather:"clear"}
     },
     players:{}, containers:{}, furnaces:{}, crops:{}, entities:{},
-    structuresGenerated:{}, automation:{}, achievementsGlobal:[], generatedChunks:{}
+    structuresGenerated:{}, automation:{}, achievementsGlobal:[], generatedChunks:{}, discoveries:{}, landmarks:{}
   };
 }
 let state = newState();
 try{ if(fs.existsSync(SAVE)) state=JSON.parse(fs.readFileSync(SAVE,"utf8")); }catch(e){console.error("save load",e)}
 state.version=5;
 state.players ||= {}; state.containers ||= {}; state.furnaces ||= {}; state.crops ||= {}; state.entities ||= {};
-state.structuresGenerated ||= {}; state.automation ||= {}; state.generatedChunks ||= {};
+state.structuresGenerated ||= {}; state.automation ||= {}; state.generatedChunks ||= {}; state.discoveries ||= {}; state.landmarks ||= {};
 state.dimensions ||= newState().dimensions;
 for(const dim of DIMENSIONS) state.dimensions[dim] ||= {blocks:{},time:.2,weather:"clear"};
 
@@ -135,7 +140,7 @@ function migratePlayer(p,name){
   p.durability ||= {};
   p.effects ||= []; p.achievements ||= [];
   p.health=Number.isFinite(p.health)?p.health:20; p.hunger=Number.isFinite(p.hunger)?p.hunger:20;
-  p.saturation=Number.isFinite(p.saturation)?p.saturation:5; p.xp ||= 0;p.level ||= 0;p.deaths ||= 0;
+  p.saturation=Number.isFinite(p.saturation)?p.saturation:5; p.xp ||= 0;p.level ||= 0;p.deaths ||= 0;p.discovered ||= [];
   p.dimension ||= "overworld"; p.pos ||= [0,8,0]; p.spawn ||= {dimension:"overworld",pos:[0,8,0]};
   for(const item of Object.keys(p.inventory)) if(TOOL_MAX[item] && p.durability[item]==null)p.durability[item]=TOOL_MAX[item];
   return p;
@@ -185,6 +190,87 @@ function markExistingChunksGenerated(){
   }
 }
 markExistingChunksGenerated();
+
+function addLandmark(id,name,x,y,z,type,loot){
+  if(state.landmarks[id])return;
+  state.landmarks[id]={id,name,x,y,z,type,loot,dimension:"overworld"};
+}
+
+function decorateOverworldChunk(cx,cz){
+  const seed=state.seed%1000,minX=cx*WORLD_CHUNK_SIZE,minZ=cz*WORLD_CHUNK_SIZE;
+
+  for(let lx=1;lx<WORLD_CHUNK_SIZE-1;lx++){
+    for(let lz=1;lz<WORLD_CHUNK_SIZE-1;lz++){
+      const x=minX+lx,z=minZ+lz,y=terrainHeight("overworld",x,z),surface=getBlock("overworld",x,y,z);
+      const biome=biomeAt(x,z,seed),r=hash2(x,z,seed);
+
+      if(surface==="grass"){
+        if(r>.965)setBlock("overworld",x,y+1,z,hash2(x+2,z,seed)>.5?"flower_red":"flower_yellow");
+        else if(r>.89)setBlock("overworld",x,y+1,z,"tall_grass");
+        else if(biome==="forest"&&r>.875)setBlock("overworld",x,y+1,z,hash2(x,z+5,seed)>.5?"mushroom_red":"mushroom_brown");
+        else if(r>.865)setBlock("overworld",x,y+1,z,"berry_bush");
+      }
+      if(surface==="sand"&&r>.97)setBlock("overworld",x,y+1,z,"dead_bush");
+
+      // Reeds near water
+      if(surface==="grass"||surface==="sand"){
+        let nearWater=false;
+        for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]])if(getBlock("overworld",x+dx,y,z+dz)==="water")nearWater=true;
+        if(nearWater&&r>.82)setBlock("overworld",x,y+1,z,"reeds");
+      }
+
+      // Cave crystals underground
+      if(hash2(x*3,z*2,seed)>.992){
+        for(let cy=-3;cy<=1;cy++)if(!getBlock("overworld",x,cy,z)&&getBlock("overworld",x,cy-1,z)==="stone"){
+          setBlock("overworld",x,cy,z,"crystal");break;
+        }
+      }
+    }
+  }
+
+  // Rare landmarks: deterministic per chunk.
+  const lr=hash2(cx,cz,seed+333);
+  const centerX=minX+8,centerZ=minZ+8,ground=terrainHeight("overworld",centerX,centerZ)+1;
+  const id=`${cx},${cz}`;
+
+  if(lr>.985){
+    // Ruined watchtower
+    for(let y=0;y<6;y++){
+      setBlock("overworld",centerX-2,ground+y,centerZ-2,"stone");
+      setBlock("overworld",centerX+2,ground+y,centerZ-2,"stone");
+      setBlock("overworld",centerX-2,ground+y,centerZ+2,"stone");
+      setBlock("overworld",centerX+2,ground+y,centerZ+2,"stone");
+    }
+    for(let x=centerX-2;x<=centerX+2;x++)for(let z=centerZ-2;z<=centerZ+2;z++)
+      if(Math.abs(x-centerX)===2||Math.abs(z-centerZ)===2)setBlock("overworld",x,ground+5,z,"cobble");
+    setBlock("overworld",centerX,ground,centerZ,"chest");
+    state.containers[`overworld:${k(centerX,ground,centerZ)}`]={slots:{iron_ingot:2,arrow:6,apple:2}};
+    addLandmark(id,"Ruined Watchtower",centerX,ground,centerZ,"watchtower","iron/arrow supplies");
+  } else if(lr>.973){
+    // Campsite
+    setBlock("overworld",centerX,ground,centerZ,"campfire");
+    setBlock("overworld",centerX+2,ground,centerZ,"chest");
+    state.containers[`overworld:${k(centerX+2,ground,centerZ)}`]={slots:{cooked_meat:2,torch:3,coal:2}};
+    for(const [dx,dz] of [[-2,-1],[-2,1],[2,-1],[2,1]])setBlock("overworld",centerX+dx,ground,centerZ+dz,"fence");
+    addLandmark(id,"Abandoned Campsite",centerX,ground,centerZ,"camp","food and fuel");
+  } else if(lr>.962){
+    // Giant tree landmark
+    for(let y=0;y<10;y++)setBlock("overworld",centerX,ground+y,centerZ,"wood");
+    for(let dx=-4;dx<=4;dx++)for(let dz=-4;dz<=4;dz++)for(let dy=7;dy<=11;dy++)
+      if(Math.abs(dx)+Math.abs(dz)<7)setBlock("overworld",centerX+dx,ground+dy,centerZ+dz,"leaves");
+    addLandmark(id,"Ancient Tree",centerX,ground,centerZ,"tree","natural landmark");
+  }
+}
+
+function generateRoadBetween(ax,az,bx,bz){
+  const steps=Math.max(Math.abs(bx-ax),Math.abs(bz-az));
+  if(!steps)return;
+  for(let i=0;i<=steps;i++){
+    const t=i/steps,x=Math.round(ax+(bx-ax)*t),z=Math.round(az+(bz-az)*t),y=terrainHeight("overworld",x,z);
+    if(getBlock("overworld",x,y,z)==="grass")setBlock("overworld",x,y,z,"road");
+    if(getBlock("overworld",x,y+1,z)==="tall_grass")setBlock("overworld",x,y+1,z,null);
+  }
+}
 function generateOverworldChunk(cx,cz){
   const marker=`overworld:${worldChunkKey(cx,cz)}`;if(state.generatedChunks[marker])return;
   const seed=state.seed%1000,minX=cx*WORLD_CHUNK_SIZE,minZ=cz*WORLD_CHUNK_SIZE;
@@ -271,6 +357,8 @@ function generateStructures(){
     }
     setBlock(dim,mx,gy,z,"rail");
   }
+  generateRoadBetween(-24,-18,24,18);
+  generateRoadBetween(24,18,24,-22);
   state.structuresGenerated.survivalV5=true;
 }
 generateStructures();
@@ -610,7 +698,12 @@ function sim(){
       const night=state.dimensions[dim].time>.52&&state.dimensions[dim].time<.96;
       let type;
       if(dim!=="overworld"||night)type=["zombie","skeleton","spider"][Math.floor(Math.random()*3)];
-      else type=["cow","pig","sheep","chicken"][Math.floor(Math.random()*4)];
+      else{
+        const biome=biomeAt(Math.round(x),Math.round(z),state.seed%1000);
+        if(biome==="forest"&&Math.random()<.35)type=Math.random()<.5?"bird_blue":"bird_red";
+        else if(Math.random()<.12)type="butterfly";
+        else type=["cow","pig","sheep","chicken"][Math.floor(Math.random()*4)];
+      }
       entity(type,{dimension:dim,pos:[x,y,z],health:["zombie","skeleton","spider"].includes(type)?12:10,ai:type});
     }
   }
@@ -633,7 +726,7 @@ function sim(){
       if(e.age>8)delete state.entities[id];continue;
     }
 
-    const mobs=["cow","pig","sheep","chicken","zombie","skeleton","spider","villager"];
+    const mobs=["cow","pig","sheep","chicken","bird_blue","bird_red","butterfly","fish","zombie","skeleton","spider","villager"];
     if(!mobs.includes(e.type))continue;
     const candidates=[...online.values()].map(n=>state.players[n]).filter(p=>p.dimension===e.dimension);
     if(!candidates.length)continue;
@@ -641,7 +734,30 @@ function sim(){
     for(const p of candidates){const dx=p.pos[0]-e.pos[0],dz=p.pos[2]-e.pos[2],d=dx*dx+dz*dz;if(d<best){best=d;target=p}}
     if(!target)continue;
     const dist=Math.sqrt(best)||1;
-    if(["zombie","skeleton","spider"].includes(e.type)&&dist<18){
+    if(["bird_blue","bird_red"].includes(e.type)){
+      e.pos[0]+=Math.sin(now/420+e.pos[2])*.05;
+      e.pos[2]+=Math.cos(now/380+e.pos[0])*.05;
+      e.pos[1]=terrainHeight(e.dimension,Math.round(e.pos[0]),Math.round(e.pos[2]))+3+Math.sin(now/300+e.pos[0])*.6;
+      continue;
+    }
+    if(e.type==="butterfly"){
+      e.pos[0]+=Math.sin(now/250+e.pos[2])*.035;
+      e.pos[2]+=Math.cos(now/280+e.pos[0])*.035;
+      e.pos[1]=terrainHeight(e.dimension,Math.round(e.pos[0]),Math.round(e.pos[2]))+1.2+Math.sin(now/180)*.35;
+      continue;
+    }
+    if(e.type==="villager"){
+      const phase=(Math.floor(now/12000)+Math.floor(e.pos[0]))%3;
+      const speed=.045;
+      if(phase===0){e.pos[0]+=Math.sin(now/1400+e.pos[2])*speed;e.pos[2]+=Math.cos(now/1600+e.pos[0])*speed}
+      else if(phase===1&&dist<10){e.pos[0]-=(target.pos[0]-e.pos[0])/dist*.02;e.pos[2]-=(target.pos[2]-e.pos[2])/dist*.02}
+      e.pos[1]=terrainHeight(e.dimension,Math.round(e.pos[0]),Math.round(e.pos[2]))+1.2;
+      continue;
+    }
+    if(["cow","pig","sheep","chicken"].includes(e.type)&&dist<3.5){
+      e.pos[0]-=(target.pos[0]-e.pos[0])/dist*.07;
+      e.pos[2]-=(target.pos[2]-e.pos[2])/dist*.07;
+    } else if(["zombie","skeleton","spider"].includes(e.type)&&dist<18){
       if(e.type==="skeleton"&&dist>4&&dist<14&&Math.random()<.025){
         const dx=(target.pos[0]-e.pos[0])/dist,dz=(target.pos[2]-e.pos[2])/dist;
         entity("projectile",{dimension:e.dimension,pos:[...e.pos],vel:[dx*8,2,dz*8],owner:"mob",age:0,damage:3});
@@ -653,6 +769,20 @@ function sim(){
       e.pos[0]+=Math.sin(now/900+e.pos[2])*.018;e.pos[2]+=Math.cos(now/1100+e.pos[0])*.018;
     }
     e.pos[1]=terrainHeight(e.dimension,Math.round(e.pos[0]),Math.round(e.pos[2]))+1.2;
+  }
+
+  // Exploration discoveries.
+  for(const [sid,name] of online){
+    const p=state.players[name];
+    if(p.dimension!=="overworld")continue;
+    for(const lm of Object.values(state.landmarks||{})){
+      if(p.discovered?.includes(lm.id))continue;
+      const dx=lm.x-p.pos[0],dz=lm.z-p.pos[2];
+      if(dx*dx+dz*dz<11*11){
+        p.discovered ||= [];p.discovered.push(lm.id);p.xp+=8;
+        io.to(sid).emit("discovery",{id:lm.id,name:lm.name,type:lm.type,loot:lm.loot});
+      }
+    }
   }
 
   // Hunger, regen, death/respawn.
