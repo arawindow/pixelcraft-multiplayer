@@ -103,3 +103,17 @@ The semi-realistic graphics are retained, but the browser renderer has been opti
 ## Renderer visibility fix
 
 The optimized chunk renderer uses correctly wound outward-facing triangles. An earlier optimized build used reversed triangle winding, causing Three.js front-face culling to hide the terrain. Night lighting also has a low-cost ambient floor so the world remains visible without disabling the dark day/night atmosphere.
+
+
+## Renderer reset after full audit
+
+The terrain renderer was reset rather than patched further. The current renderer:
+- uses individual detailed PNG textures rather than the atlas shader path;
+- uses `MeshBasicMaterial` for terrain so lighting cannot make blocks invisible;
+- uses one shared standard `BoxGeometry`;
+- batches exposed blocks into per-type `InstancedMesh` objects inside 16×16 chunk groups;
+- builds a 5×5 region synchronously before hiding the login overlay;
+- forces a safe spawn on a verified solid surface;
+- starts the camera looking downward at terrain;
+- retains chunk streaming and adaptive pixel ratio;
+- reports camera coordinates, chunk count, draw-mesh count and instance count in the HUD.
