@@ -152,6 +152,10 @@ function loadHeight(name){
 }
 ["grass_top","grass_side","dirt","stone","cobble","sand","wood_side","wood_top","leaves","plank","glass","coal_ore","iron_ore","gold_ore","diamond_ore","obsidian","snow","ice","brick","farmland","wheat","torch","crafting_table","furnace","chest","rail","powered_rail","wire","lamp","portal","water","lava"].forEach(n=>TEX[n]={map:loadTex(n),height:loadHeight(n)});
 
+const animatedTextureSets={water:[],lava:[],fire:[]};
+let animatedFrame=0, animatedStamp=0;
+function loadAnimatedSet(name,count=4){ if(animatedTextureSets[name].length)return animatedTextureSets[name]; for(let i=0;i<count;i++){ const tex=new THREE.TextureLoader().load(`/assets/animated/${name}_${i}.png`); tex.colorSpace=THREE.SRGBColorSpace; tex.magFilter=THREE.LinearFilter; tex.minFilter=THREE.LinearMipmapLinearFilter; animatedTextureSets[name].push(tex) } return animatedTextureSets[name]; }
+const animatedMaterials={water:[],lava:[],torch:[],campfire:[]};
 const materialCache=new Map();
 function oneMaterial(t,face=t){
   const ck=`${t}:${face}`;if(materialCache.has(ck))return materialCache.get(ck);
@@ -171,9 +175,18 @@ function oneMaterial(t,face=t){
     emissiveMap:["lava","torch","lamp","portal"].includes(t)?tx.map:null,
     emissiveIntensity:t==="lava"?2.2:t==="torch"||t==="lamp"?1.55:t==="portal"?1.25:0
   });
+  if(["water","lava","torch","campfire"].includes(t)){ if(!animatedMaterials[t])animatedMaterials[t]=[]; animatedMaterials[t].push(mat) }
   materialCache.set(ck,mat);return mat;
 }
 
+function updateAnimatedTextures(dt){
+  animatedStamp+=dt; if(animatedStamp<.18)return; animatedStamp=0; animatedFrame=(animatedFrame+1)%4;
+  const waterSet=loadAnimatedSet('water'), lavaSet=loadAnimatedSet('lava'), fireSet=loadAnimatedSet('fire');
+  for(const m of animatedMaterials.water||[]){ m.map=waterSet[animatedFrame]; m.needsUpdate=true }
+  for(const m of animatedMaterials.lava||[]){ m.map=lavaSet[animatedFrame]; m.emissiveMap=lavaSet[animatedFrame]; m.needsUpdate=true }
+  for(const m of animatedMaterials.torch||[]){ m.emissiveMap=fireSet[animatedFrame]; m.needsUpdate=true }
+  for(const m of animatedMaterials.campfire||[]){ m.emissiveMap=fireSet[animatedFrame]; m.needsUpdate=true }
+}
 const decorationMaterials=new Map();
 function decorationMaterial(type){
   if(decorationMaterials.has(type))return decorationMaterials.get(type);
@@ -311,9 +324,25 @@ function spriteText(text,color="#fff"){
   const c=document.createElement("canvas"),ctx=c.getContext("2d");c.width=512;c.height=128;ctx.font="bold 40px Arial";ctx.textAlign="center";ctx.fillStyle="rgba(0,0,0,.45)";ctx.fillRect(0,32,512,64);ctx.fillStyle=color;ctx.fillText(text,256,78);
   const tex=new THREE.CanvasTexture(c),mat=new THREE.SpriteMaterial({map:tex,transparent:true}),s=new THREE.Sprite(mat);s.scale.set(4,1,1);return s;
 }
+
+const uiAsset=p=>`/assets/ui/${p}.png`;
+const itemIconPath=i=>`/assets/items/${i}.png`;
+const playerTextureLoader=new THREE.TextureLoader();
+const playerSkinCache=new Map();
+function pickPlayerSkin(name){ const skins=["adventurer","engineer","ranger","farmer","smith","scholar"]; let h=0; for(let i=0;i<name.length;i++)h=(h*31+name.charCodeAt(i))>>>0; return skins[h%skins.length]; }
+function playerSkin(name){ const id=pickPlayerSkin(name); if(playerSkinCache.has(id))return playerSkinCache.get(id); const tex=playerTextureLoader.load(`/assets/players/${id}.png`); tex.colorSpace=THREE.SRGBColorSpace; tex.magFilter=THREE.NearestFilter; tex.minFilter=THREE.NearestFilter; playerSkinCache.set(id,tex); return tex; }
+function eyeCube(s=.07){ return new THREE.Mesh(new THREE.BoxGeometry(s,s,s/2), new THREE.MeshStandardMaterial({color:0xffffff, emissive:0x111111})) }
+function pupilCube(s=.035){ return new THREE.Mesh(new THREE.BoxGeometry(s,s,s/2), new THREE.MeshStandardMaterial({color:0x111111})) }
+function addEyes(group,y,z,spacing=.14,scale=.07){ const le=eyeCube(scale), re=eyeCube(scale), lp=pupilCube(scale*.5), rp=pupilCube(scale*.5); le.position.set(-spacing,y,z); re.position.set(spacing,y,z); lp.position.set(-spacing,y,z-.03); rp.position.set(spacing,y,z-.03); group.add(le,re,lp,rp) }
+function makePlayerModel(name){ const g=new THREE.Group(), tex=playerSkin(name), mat=new THREE.MeshStandardMaterial({map:tex, roughness:.86, metalness:0}); const body=part(.74,1.02,.42,mat,0,.82,0), head=part(.6,.6,.6,mat,0,1.7,0), lArm=part(.18,.88,.18,mat,-.5,.86,0), rArm=part(.18,.88,.18,mat,.5,.86,0), lLeg=part(.22,.92,.22,mat,-.17,.22,0), rLeg=part(.22,.92,.22,mat,.17,.22,0); g.add(body,head,lArm,rArm,lLeg,rLeg); addEyes(g,1.74,-.31,.12,.08); const hair=new THREE.Mesh(new THREE.BoxGeometry(.66,.12,.66), new THREE.MeshStandardMaterial({color:0x4a3628})); hair.position.set(0,2.02,0); g.add(hair); g.userData.legs=[lLeg,rLeg]; g.userData.arms=[lArm,rArm]; g.userData.player=true; return g; }
+function uiIcon(img){ return `<img class="asset-icon" src="${img}" alt="">`; }
+function itemIcon(item){ return item ? uiIcon(itemIconPath(item)) : `<span class="empty-mini">—</span>`; }
+function renderHearts(v,max=20){ let s=''; for(let i=0;i<max/2;i++)s+=`<img class="hud-mini" src="${uiAsset(i<Math.ceil(v/2)?'heart_full':'heart_empty')}">`; return s }
+function renderArmor(v,max=20){ let s=''; for(let i=0;i<max/2;i++)s+=`<img class="hud-mini" src="${uiAsset(i<Math.ceil(v/2)?'armor_full':'armor_empty')}">`; return s }
+function renderHunger(v,max=20){ let s=''; for(let i=0;i<max/2;i++)s+=`<img class="hud-mini" src="${uiAsset(i<Math.ceil(v/2)?'hunger_full':'hunger_empty')}">`; return s }
 function addOther(p){
-  const g=new THREE.Group(),body=new THREE.Mesh(new THREE.BoxGeometry(.7,1.3,.45),new THREE.MeshStandardMaterial({color:0x4a7ec7})),head=new THREE.Mesh(new THREE.BoxGeometry(.65,.65,.65),new THREE.MeshStandardMaterial({color:0xd9aa7d}));
-  body.position.y=.65;head.position.y=1.65;g.add(body,head);const tag=spriteText(p.name);tag.position.y=2.35;g.add(tag);g.position.fromArray(p.pos);scene.add(g);otherPlayers.set(p.id,{group:g,tag,speech:null,target:new THREE.Vector3(...p.pos)});
+  const g=makePlayerModel(p.name), tag=spriteText(p.name); tag.position.y=2.5; g.add(tag); g.position.fromArray(p.pos); scene.add(g);
+  otherPlayers.set(p.id,{group:g,tag,speech:null,target:new THREE.Vector3(...p.pos),walk:0,name:p.name});
 }
 function speech(id,text){
   const o=otherPlayers.get(id);if(!o)return;if(o.speech)o.group.remove(o.speech);o.speech=spriteText(text,"#ffe68a");o.speech.position.y=2.9;o.group.add(o.speech);setTimeout(()=>{if(o.speech){o.group.remove(o.speech);o.speech=null}},5000);
@@ -343,7 +372,7 @@ const mobTextureLoader=new THREE.TextureLoader();
 const mobTextures=new Map();
 function mobTexture(type){
   if(mobTextures.has(type))return mobTextures.get(type);
-  const file=["cow","pig","sheep","chicken","bird_blue","bird_red","butterfly","fish","villager","zombie","skeleton","spider"].includes(type)?type:"cow";
+  const file=["cow","pig","sheep","chicken","duck","wolf","deer","rabbit","fox","frog","bee","bird_blue","bird_red","butterfly","fish","villager","zombie","skeleton","spider"].includes(type)?type:"cow";
   const tex=mobTextureLoader.load(`/assets/mobs/${file}.png`);
   tex.colorSpace=THREE.SRGBColorSpace;tex.magFilter=THREE.NearestFilter;tex.minFilter=THREE.NearestFilter;
   mobTextures.set(type,tex);return tex;
@@ -354,45 +383,40 @@ function part(w,h,d,mat,x,y,z){
 function makeAnimalModel(type){
   const g=new THREE.Group();
   const mat=new THREE.MeshStandardMaterial({map:mobTexture(type),roughness:.85,metalness:0});
-  if(["cow","pig","sheep"].includes(type)){
-    const body=part(type==="pig"?1.15:1.35,type==="pig"?.7:.85,type==="pig"?.72:.78,mat,0,.9,0);g.add(body);
-    const head=part(.62,.62,.62,mat,0,1.15,-.72);g.add(head);
-    const legs=[];
-    for(const [x,z] of [[-.42,-.35],[.42,-.35],[-.42,.35],[.42,.35]]){
-      const leg=part(.2,.62,.2,mat,x,.35,z);leg.userData.leg=true;legs.push(leg);g.add(leg);
-    }
-    g.userData.legs=legs;
-  }else if(type==="chicken"){
-    g.add(part(.72,.72,.58,mat,0,.82,0));
-    g.add(part(.42,.42,.4,mat,0,1.28,-.38));
-    const l1=part(.12,.42,.12,mat,-.18,.3,0),l2=part(.12,.42,.12,mat,.18,.3,0);l1.userData.leg=l2.userData.leg=true;g.add(l1,l2);g.userData.legs=[l1,l2];
-  }else if(["bird_blue","bird_red"].includes(type)){
-    g.add(part(.45,.32,.56,mat,0,.45,0));
-    const w1=part(.55,.08,.28,mat,-.42,.46,0),w2=part(.55,.08,.28,mat,.42,.46,0);
-    w1.userData.wing=1;w2.userData.wing=-1;g.add(w1,w2);g.userData.wings=[w1,w2];
+  if(["cow","pig","sheep","wolf","deer","fox","frog"].includes(type)){
+    const body=part(type==="pig"?1.15:1.35,type==="pig"?.7:.85,type==="pig"?.72:.78,mat,0,.9,0); g.add(body);
+    const head=part(.62,.62,.62,mat,0,1.15,-.72); g.add(head);
+    const snout=part(type==="pig"?.34:.24,.22,.18,mat,0,1.05,-1.02); g.add(snout);
+    [part(.12,.16,.08,mat,-.18,1.46,-.72),part(.12,.16,.08,mat,.18,1.46,-.72)].forEach(e=>g.add(e));
+    if(type==="deer"){ g.add(part(.05,.28,.05,mat,-.16,1.65,-.7),part(.05,.28,.05,mat,.16,1.65,-.7)) }
+    if(type==="fox"||type==="wolf"){ g.add(part(.14,.14,.14,mat,0,.95,.72)) }
+    addEyes(g,1.17,-1.01,.12,.06);
+    const legs=[]; for(const [x,z] of [[-.42,-.35],[.42,-.35],[-.42,.35],[.42,.35]]){ const leg=part(.2,.62,.2,mat,x,.35,z); legs.push(leg); g.add(leg) } g.userData.legs=legs;
+  }else if(type==="rabbit"){
+    g.add(part(.72,.6,.56,mat,0,.72,0),part(.46,.46,.46,mat,0,.98,-.36),part(.08,.34,.08,mat,-.1,1.32,-.34),part(.08,.34,.08,mat,.1,1.32,-.34)); addEyes(g,1.0,-.58,.1,.05);
+    const l1=part(.12,.32,.12,mat,-.18,.2,0), l2=part(.12,.32,.12,mat,.18,.2,0); g.add(l1,l2); g.userData.legs=[l1,l2];
+  }else if(["chicken","duck"].includes(type)){
+    g.add(part(.72,.72,.58,mat,0,.82,0),part(.42,.42,.4,mat,0,1.28,-.38)); g.add(part(.16,.12,.12,new THREE.MeshStandardMaterial({color:type==="duck"?0xe6ad42:0xf0bf52}),0,1.22,-.62)); addEyes(g,1.3,-.55,.09,.05);
+    const l1=part(.12,.42,.12,mat,-.18,.3,0), l2=part(.12,.42,.12,mat,.18,.3,0); g.add(l1,l2); g.userData.legs=[l1,l2];
+  }else if(["bird_blue","bird_red","bee"].includes(type)){
+    g.add(part(.45,.32,.56,mat,0,.45,0),part(.28,.28,.28,mat,0,.54,-.26)); const w1=part(.55,.08,.28,mat,-.42,.46,0), w2=part(.55,.08,.28,mat,.42,.46,0); g.add(w1,w2); g.userData.wings=[w1,w2]; g.add(part(.1,.08,.1,new THREE.MeshStandardMaterial({color:type==="bee"?0x222222:0xf0bf52}),0,.52,-.45)); addEyes(g,.56,-.36,.07,.045);
   }else if(type==="butterfly"){
-    const b=part(.12,.18,.32,mat,0,.4,0),w1=part(.62,.04,.48,mat,-.34,.42,0),w2=part(.62,.04,.48,mat,.34,.42,0);g.add(b,w1,w2);g.userData.wings=[w1,w2];
+    const b=part(.12,.18,.32,mat,0,.4,0),w1=part(.62,.04,.48,mat,-.34,.42,0),w2=part(.62,.04,.48,mat,.34,.42,0); g.add(b,w1,w2); g.userData.wings=[w1,w2];
   }else if(type==="spider"){
-    g.add(part(.7,.38,.9,mat,0,.45,0));
-    const legs=[];for(let side of [-1,1])for(let i=0;i<4;i++){const leg=part(.55,.1,.12,mat,side*.55,.35,(i-1.5)*.22);leg.rotation.z=side*.25;legs.push(leg);g.add(leg)}g.userData.legs=legs;
+    g.add(part(.7,.38,.9,mat,0,.45,0),part(.38,.26,.38,mat,0,.52,-.52)); const legs=[]; for(let side of [-1,1]) for(let i=0;i<4;i++){ const leg=part(.55,.1,.12,mat,side*.55,.35,(i-1.5)*.22); leg.rotation.z=side*.25; legs.push(leg); g.add(leg) } g.userData.legs=legs; for(let ex of [-.16,-.05,.05,.16]){ const eye=new THREE.Mesh(new THREE.BoxGeometry(.05,.05,.03), new THREE.MeshStandardMaterial({color:0xff5c5c, emissive:0x220000})); eye.position.set(ex,.57,-.72); g.add(eye) }
+  }else if(type==="fish"){
+    g.add(part(.72,.32,.42,mat,0,.5,0),part(.26,.22,.18,mat,.45,.5,0)); addEyes(g,.53,-.22,.09,.04);
   }else{
-    // humanoids: villager/zombie/skeleton
-    g.add(part(.62,.9,.4,mat,0,.95,0));g.add(part(.55,.55,.55,mat,0,1.68,0));
-    const l1=part(.22,.75,.22,mat,-.18,.3,0),l2=part(.22,.75,.22,mat,.18,.3,0);
-    g.add(l1,l2);g.userData.legs=[l1,l2];
+    const body=part(.62,.9,.4,mat,0,.95,0), head=part(.55,.55,.55,mat,0,1.68,0), lArm=part(.18,.72,.18,mat,-.42,.95,0), rArm=part(.18,.72,.18,mat,.42,.95,0), l1=part(.22,.75,.22,mat,-.18,.3,0), l2=part(.22,.75,.22,mat,.18,.3,0); g.add(body,head,lArm,rArm,l1,l2); addEyes(g,1.72,-.3,.11,.055); if(type==="villager")g.add(part(.1,.18,.1,mat,0,1.62,-.34)); g.userData.legs=[l1,l2]; g.userData.arms=[lArm,rArm];
   }
-  g.userData.mobType=type;
-  return g;
+  g.userData.mobType=type; return g;
 }
 function animateAnimalModel(m,e,now){
   const t=now*.006+(e.pos?.[0]||0);
-  if(m.userData.legs){
-    m.userData.legs.forEach((leg,i)=>leg.rotation.x=Math.sin(t+i*Math.PI)*.45);
-  }
-  if(m.userData.wings){
-    m.userData.wings.forEach((wing,i)=>wing.rotation.z=Math.sin(now*.018+i*Math.PI)*.75);
-  }
-  if(["cow","pig","sheep","chicken"].includes(e.type))m.rotation.y=Math.atan2((e.targetPos?.[0]??e.pos[0])-m.position.x,(e.targetPos?.[2]??e.pos[2])-m.position.z);
+  if(m.userData.legs)m.userData.legs.forEach((leg,i)=>leg.rotation.x=Math.sin(t+i*Math.PI)*.45);
+  if(m.userData.arms)m.userData.arms.forEach((arm,i)=>arm.rotation.x=Math.sin(t+i*Math.PI)*.28);
+  if(m.userData.wings)m.userData.wings.forEach((wing,i)=>wing.rotation.z=Math.sin(now*.018+i*Math.PI)*.75);
+  if(["cow","pig","sheep","chicken","duck","wolf","deer","rabbit","fox","frog"].includes(e.type))m.rotation.y=Math.atan2((e.targetPos?.[0]??e.pos[0])-m.position.x,(e.targetPos?.[2]??e.pos[2])-m.position.z);
   if(e.type==="butterfly")m.rotation.y+=.02;
 }
 function syncEntities(newEnt){
@@ -411,7 +435,7 @@ function syncEntities(newEnt){
       else if(e.type==="projectile")m=new THREE.Mesh(entityGeoCache.projectile,entityMaterial("projectile"));
       else if(e.type==="boat")m=new THREE.Mesh(entityGeoCache.boat,entityMaterial("boat"));
       else if(e.type==="minecart")m=new THREE.Mesh(entityGeoCache.minecart,entityMaterial("minecart"));
-      else if(["cow","pig","sheep","chicken","bird_blue","bird_red","butterfly","villager","zombie","skeleton","spider"].includes(e.type))m=makeAnimalModel(e.type);
+      else if(["cow","pig","sheep","chicken","duck","wolf","deer","rabbit","fox","frog","bee","bird_blue","bird_red","butterfly","villager","zombie","skeleton","spider","fish"].includes(e.type))m=makeAnimalModel(e.type);
       else m=new THREE.Mesh(e.type==="boss"?entityGeoCache.boss:entityGeoCache.mob,entityMaterial(e.type));
       m.userData={entityId:id,type:e.type,target:new THREE.Vector3(...e.pos)};m.position.fromArray(e.pos);scene.add(m);entityMeshes.set(id,m);
     }else m.userData.target.set(...e.pos);
@@ -420,20 +444,13 @@ function syncEntities(newEnt){
 
 function ui(){
   if(!me)return;
-  $("#health").textContent="❤ ".repeat(Math.ceil(me.health/2));
-  $("#armor").textContent="◆ ".repeat(Math.ceil((me.armor||0)/2));
-  $("#hunger").textContent="● ".repeat(Math.ceil(me.hunger/2));
-  $("#effects").innerHTML=(me.effects||[]).filter(e=>e.until>Date.now()).map(e=>e.type).join(" · ")+
-    `<div id="xpBar"><i style="width:${Math.min(100,((me.xp||0)/Math.max(1,(me.level+1)*10))*100)}%"></i></div>Level ${me.level||0}`;
+  $("#health").innerHTML=renderHearts(me.health||0);
+  $("#armor").innerHTML=renderArmor(me.armor||0);
+  $("#hunger").innerHTML=renderHunger(me.hunger||0);
+  $("#effects").innerHTML=(me.effects||[]).filter(e=>e.until>Date.now()).map(e=>e.type).join(" · ")+`<div id="xpBar"><i style="width:${Math.min(100,((me.xp||0)/Math.max(1,(me.level+1)*10))*100)}%"></i></div>Level ${me.level||0}`;
   $("#dimensionLabel").textContent=dimension.toUpperCase();
   const hb=$("#hotbar");hb.innerHTML="";
-  me.hotbar.forEach((item,i)=>{
-    const d=document.createElement("div");d.className="hot"+(i===selected?" sel":"");
-    const col=COLORS[item]??0x999999,maxDur={wood_pickaxe:60,stone_pickaxe:132,iron_pickaxe:251,wood_axe:60,stone_axe:132,iron_axe:251,wood_shovel:60,stone_shovel:132,iron_shovel:251,wood_hoe:60,stone_hoe:132,iron_hoe:251,wood_sword:60,stone_sword:132,iron_sword:251,bow:384}[item];
-    const dur=maxDur?`<div class="durability"><i style="width:${Math.max(0,Math.min(100,(me.durability?.[item]??maxDur)/maxDur*100))}%"></i></div>`:"";
-    d.innerHTML=`<div class="icon" style="background:#${col.toString(16).padStart(6,"0")}"></div>${i+1} ${item||"-"}<br>${me.inventory[item]||""}${dur}`;
-    hb.appendChild(d);
-  });
+  me.hotbar.forEach((item,i)=>{ const d=document.createElement("div"); d.className="hot"+(i===selected?" sel":""); const maxDur={wood_pickaxe:60,stone_pickaxe:132,iron_pickaxe:251,wood_axe:60,stone_axe:132,iron_axe:251,wood_shovel:60,stone_shovel:132,iron_shovel:251,wood_hoe:60,stone_hoe:132,iron_hoe:251,wood_sword:60,stone_sword:132,iron_sword:251,bow:384}[item]; const dur=maxDur?`<div class="durability"><i style="width:${Math.max(0,Math.min(100,(me.durability?.[item]??maxDur)/maxDur*100))}%"></i></div>`:""; d.innerHTML=`<div class="slot-bg">${itemIcon(item)}</div><div class="hot-index">${i+1}</div><div class="hot-name">${item||"-"}</div><div class="hot-count">${item?(me.inventory[item]||""):""}</div>${dur}`; hb.appendChild(d) });
 }
 const recipes=[
   "plank","stick","crafting_table","chest","furnace","torch",
@@ -445,32 +462,17 @@ const recipes=[
   "iron_helmet","iron_chest","iron_legs","iron_boots","healing_potion"
 ];
 function renderCraftGrid(){
-  const g=$("#craftGrid");if(!g)return;g.innerHTML="";
-  craftGridState.forEach((item,i)=>{
-    const s=document.createElement("div");s.className="craft-slot"+(item?" filled":"");
-    s.textContent=item||"empty";
-    s.title=item?"Click to remove":"Click an inventory item to add it";
-    s.onclick=()=>{craftGridState[i]=null;renderCraftGrid()};
-    g.appendChild(s);
-  });
+  const g=$("#craftGrid"); if(!g)return; g.innerHTML="";
+  craftGridState.forEach((item,i)=>{ const s=document.createElement("div"); s.className="craft-slot"+(item?" filled":""); s.innerHTML=`<div class="slot-bg large">${itemIcon(item)}</div><small>${item||"empty"}</small>`; s.title=item?"Click to remove":"Click an inventory item to add it"; s.onclick=()=>{craftGridState[i]=null;renderCraftGrid()}; g.appendChild(s) });
 }
 function inventoryUI(){
-  const g=$("#inventoryGrid");g.className="grid";g.innerHTML="";
-  Object.entries(me.inventory).sort().forEach(([item,count])=>{
-    const d=document.createElement("div");d.className="inv-slot";
-    const dur=me.durability?.[item];
-    d.innerHTML=`<b>${item}</b><span class=count>${count}</span>${dur!=null?`<small>Durability ${dur}</small>`:""}`;
-    d.onclick=()=>{const slot=craftGridState.findIndex(x=>!x);if(slot>=0){craftGridState[slot]=item;renderCraftGrid()}};
-    g.appendChild(d);
-  });
-  const armorSlot=item=>item?.includes("helmet")?"head":item?.includes("chest")?"chest":item?.includes("legs")?"legs":item?.includes("boots")?"feet":null;
-  $("#equipment").innerHTML=Object.entries(me.equipment).map(([slot,item])=>`<button class=equip data-unequip="${slot}">${slot}: ${item||"empty"}</button>`).join("")+
-    `<div class=equip>Armor ${me.armor||0}</div><div class=equip>XP level ${me.level||0}</div>`;
+  const g=$("#inventoryGrid"); g.className="grid"; g.innerHTML="";
+  Object.entries(me.inventory).sort().forEach(([item,count])=>{ const d=document.createElement("div"); d.className="inv-slot"; const dur=me.durability?.[item]; d.innerHTML=`<div class="inv-top"><div class="slot-bg">${itemIcon(item)}</div><span class="count">${count}</span></div><b>${item}</b>${dur!=null?`<small>Durability ${dur}</small>`:""}`; d.onclick=()=>{const slot=craftGridState.findIndex(x=>!x); if(slot>=0){craftGridState[slot]=item;renderCraftGrid()}}; g.appendChild(d) });
+  $("#equipment").innerHTML=Object.entries(me.equipment).map(([slot,item])=>`<button class="equip equip-card" data-unequip="${slot}"><span>${slot}</span><div class="slot-bg">${itemIcon(item)}</div><b>${item||"empty"}</b></button>`).join("")+`<div class="equip equip-card">Armor ${me.armor||0}</div><div class="equip equip-card">XP level ${me.level||0}</div>`;
   document.querySelectorAll("[data-unequip]").forEach(b=>b.onclick=()=>socket.emit("unequip",{slot:b.dataset.unequip}));
-  $("#craftRecipes").innerHTML=recipes.map(r=>`<div class=recipe><b>${r}</b><button data-gridcraft="${r}">Craft with grid</button></div>`).join("");
+  $("#craftRecipes").innerHTML=recipes.map(r=>`<div class="recipe"><span class="recipe-main"><span class="slot-bg mini">${itemIcon(r)}</span><b>${r}</b></span><button data-gridcraft="${r}">Craft with grid</button></div>`).join("");
   document.querySelectorAll("[data-gridcraft]").forEach(b=>b.onclick=()=>socket.emit("craftGrid",{recipe:b.dataset.gridcraft,grid:craftGridState}));
-  renderCraftGrid();
-  const clear=$("#clearCraft");if(clear)clear.onclick=()=>{craftGridState=Array(9).fill(null);renderCraftGrid()};
+  renderCraftGrid(); const clear=$("#clearCraft"); if(clear)clear.onclick=()=>{craftGridState=Array(9).fill(null);renderCraftGrid()};
 }
 function achievementsUI(){
   const all=["first_block","first_craft","traveler","farmer","angler","engineer","dimension_hopper","boss_slayer"];
@@ -778,8 +780,8 @@ renderer.domElement.addEventListener("click",()=>sound(180,.03));
 function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),.05);
-  move(dt);mineTick(dt);streamWorldChunks();updateBlockVisibility();processRenderCreateQueue();updateParticles(dt);updateEnvironmentalAnimation(dt);updateWeatherParticles(dt);playAmbientSound();
-  for(const o of otherPlayers.values())o.group.position.lerp(o.target,Math.min(1,dt*12));
+  move(dt);mineTick(dt);streamWorldChunks();updateBlockVisibility();processRenderCreateQueue();updateAnimatedTextures(dt);updateParticles(dt);updateEnvironmentalAnimation(dt);updateWeatherParticles(dt);playAmbientSound();
+  for(const o of otherPlayers.values()){ const before=o.group.position.clone(); o.group.position.lerp(o.target,Math.min(1,dt*12)); const moved=o.group.position.distanceTo(before); if(o.group.userData.legs){ o.walk=(o.walk||0)+(moved>0.002?dt*14:0); o.group.userData.legs.forEach((leg,i)=>leg.rotation.x=Math.sin((o.walk||0)+i*Math.PI)*.42) } if(o.group.userData.arms){ o.group.userData.arms.forEach((arm,i)=>arm.rotation.x=Math.sin((o.walk||0)+i*Math.PI)*.28) } }
   for(const [id,m] of entityMeshes){
     const e=entities[id];
     if(e&&m.userData.target)m.position.lerp(m.userData.target,Math.min(1,dt*9));

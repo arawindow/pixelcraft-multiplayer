@@ -55,3 +55,14 @@ body{background:radial-gradient(circle at 50% 20%,#27313b,#090b0e 70%)}
 #xpBar{height:5px;background:#202428;border-radius:4px;overflow:hidden;margin-top:5px}#xpBar>i{display:block;height:100%;background:#72c76a}
 .particle{pointer-events:none}
 @media(max-width:760px){.craft-layout{grid-template-columns:1fr}.craft-grid{grid-template-columns:repeat(3,60px);grid-template-rows:repeat(3,60px)}}
+
+
+/* Asset overhaul UI */
+.hud-mini{width:14px;height:14px;image-rendering:pixelated;vertical-align:middle;margin-right:1px}
+.asset-icon{width:26px;height:26px;image-rendering:pixelated;display:block;margin:auto}
+.slot-bg{width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:url('/assets/ui/slot.png') center/cover no-repeat}
+.slot-bg.large{width:42px;height:42px}.slot-bg.mini{width:28px;height:28px}.hot.sel .slot-bg{background-image:url('/assets/ui/slot_selected.png')}
+.hot{width:78px;height:84px;padding:4px 3px;justify-content:flex-start;gap:2px}.hot-index{font-size:10px;opacity:.8}.hot-name{font-size:10px;line-height:1.1;text-align:center;max-width:70px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.hot-count{font-size:11px;color:#efe2ad}
+#stats img{filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}.inv-slot{display:flex;flex-direction:column;gap:4px}.inv-top{display:flex;justify-content:space-between;align-items:flex-start}.inv-slot b{font-size:11px;line-height:1.2}.inv-slot small{opacity:.75}.equip-card{display:flex;align-items:center;gap:8px;background:linear-gradient(180deg,#181c20,#0f1215)}
+.recipe-main{display:flex;align-items:center;gap:8px}.empty-mini{opacity:.55}.craft-slot small{font-size:10px;opacity:.78}.craft-slot .slot-bg{margin-bottom:2px}
+#crosshair{width:26px;height:26px;background:url('/assets/ui/crosshair.png') center/contain no-repeat;font-size:0}

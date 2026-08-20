@@ -153,3 +153,12 @@ The renderer itself remains the conservative working Mesh-per-visible-block rend
 - Ambient synthesized sounds.
 - Discovery notifications and XP rewards.
 - Landmark loot chests.
+
+
+## Full asset overhaul
+
+- Added 50+ original item and decor/UI art assets.
+- Added 6 original player skin textures with detailed eyes.
+- Added/updated 19 mob textures and detailed multipart creature models with visible eyes.
+- Added animated water, lava, and fire frame assets with client-side texture animation.
+- Updated HUD, hotbar, inventory, crafting, and equipment panels to use icon-based artwork.
