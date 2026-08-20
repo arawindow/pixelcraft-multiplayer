@@ -42,9 +42,19 @@
     <div class="panel wide">
       <div class="modal-head"><h2>Inventory & Crafting</h2><button data-close="inventoryScreen">×</button></div>
       <div id="equipment"></div>
+      <h3>Inventory</h3>
       <div id="inventoryGrid"></div>
-      <h3>Crafting</h3>
-      <div id="craftRecipes"></div>
+      <div class="craft-layout">
+        <div>
+          <h3>3×3 Crafting Grid</h3>
+          <div id="craftGrid" class="craft-grid"></div>
+          <button id="clearCraft">Clear grid</button>
+        </div>
+        <div>
+          <h3>Craftable Recipes</h3>
+          <div id="craftRecipes"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -62,10 +72,18 @@
     </div>
   </div>
 
+  <div id="deathScreen" class="modal hidden">
+    <div class="panel login-panel">
+      <h1>You died</h1>
+      <p>Your inventory was dropped at your death location.</p>
+      <button id="respawnBtn">Respawn</button>
+    </div>
+  </div>
+
   <div id="help" class="hidden">
     WASD move · Space jump · Shift sprint · Left click mine/attack · Right click place/use ·
     1-9 hotbar · E inventory · Enter chat · G achievements · F fish/use vehicle · R potion ·
-    Q drop item · P portal debug recipe hint
+    Q drop item · H equip selected armor · T till soil with hoe · P portal debug recipe hint
   </div>
 
   <script src="/socket.io/socket.io.js"></script>

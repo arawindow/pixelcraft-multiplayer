@@ -84,3 +84,28 @@ All included textures are original generated assets for Blockcraft and do not us
 ## Safe performance pass
 
 This build deliberately keeps the original working per-block Three.js renderer and semi-realistic materials. Performance changes are conservative: incremental block visual updates instead of full-world rebuilds, 48-block visual distance, nearby-only shadow casting, 1024px shadow map, adaptive 0.9–1.35 render pixel ratio, 15Hz player network updates, 5Hz server simulation snapshots, entity distance culling, and interpolation for remote players/entities. No chunk renderer, custom geometry, texture atlas, or instanced terrain is used.
+
+
+## Survival gameplay expansion
+
+This build keeps the known-working semi-realistic per-block renderer and adds:
+
+- 3×3 interactive crafting grid with server-validated recipes
+- wood/stone/iron tools, durability and tool-specific mining
+- leather/iron armor equipment and damage reduction
+- proper block/mob drops and persistent dropped-item entities
+- synchronized multiplayer chests
+- timed furnaces with fuel, progress, smelting and synchronized GUI
+- farmland, hoes, seeds, hydration-aware wheat growth and harvesting
+- apples, meat, cooked food, saturation and healing food
+- cows, pigs, sheep, chickens, zombies, skeletons and spiders
+- hostile chasing, skeleton projectiles and daytime passive wandering
+- inventory drop on death and multiplayer respawn
+- biome-aware terrain generation, improved caves/ores, village houses, farms and mineshaft structure
+- doors, fences, stairs, slabs and ladders
+- bow combat, arrows, XP and levels
+- local torch/lamp/lava point lights
+- rain/storm particle effects
+- block-breaking particles
+
+The renderer itself remains the conservative working Mesh-per-visible-block renderer; no chunk/instancing rewrite is used.
