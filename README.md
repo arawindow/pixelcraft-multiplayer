@@ -127,3 +127,13 @@ The renderer itself remains the conservative working Mesh-per-visible-block rend
 - The browser keeps nearby chunks only and unloads distant data/meshes.
 - Returning streams saved chunks back from the server.
 - The working semi-realistic renderer and permanent daytime are preserved.
+
+
+## Smoother rendering
+
+- block meshes are pooled and reused;
+- newly streamed blocks are created over multiple frames instead of one large spike;
+- nearby blocks are prioritized in the render queue;
+- parsed block coordinates are cached;
+- raycasts only inspect nearby chunk meshes;
+- visual quality, textures, bump maps, lighting, shadows and render distance are unchanged.

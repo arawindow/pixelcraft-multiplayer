@@ -9,13 +9,74 @@ const WORLD_CHUNK_SIZE=16,WORLD_STREAM_RADIUS=3,WORLD_KEEP_RADIUS=4;
 const loadedWorldChunks=new Set(),requestedWorldChunks=new Set();let lastWorldStreamChunk=null;
 const worldChunkKey=(cx,cz)=>`${cx},${cz}`;const worldChunkCoord=v=>Math.floor(Math.floor(v)/WORLD_CHUNK_SIZE);
 const clientChunkBlocks=new Map();
+const blockCoordCache=new Map();
+const blockMeshPools=new Map();
+const renderCreateQueue=[];
+const renderCreateQueued=new Set();
+const MAX_BLOCK_CREATES_PER_FRAME=48;
+const RAYCAST_CHUNK_RADIUS=1;
+
+function coordsForKey(kk){
+  let c=blockCoordCache.get(kk);
+  if(c)return c;
+  c=kk.split(",").map(Number);
+  blockCoordCache.set(kk,c);
+  return c;
+}
+function blockPool(type){
+  if(!blockMeshPools.has(type))blockMeshPools.set(type,[]);
+  return blockMeshPools.get(type);
+}
+function acquireBlockMesh(type){
+  const p=blockPool(type),m=p.pop();
+  if(m){m.visible=true;return m}
+  return new THREE.Mesh(specialGeometries[type]||blockGeo,materialsFor(type));
+}
+function releaseBlockMesh(m){
+  scene.remove(m);
+  m.visible=false;m.castShadow=false;m.receiveShadow=false;
+  blockPool(m.userData.type).push(m);
+}
+function queueBlockVisual(kk,priority){
+  if(blockMeshes.has(kk)||renderCreateQueued.has(kk)||!blocks[kk])return;
+  renderCreateQueued.add(kk);renderCreateQueue.push([priority,kk]);
+}
+function pruneRenderQueue(){
+  if(renderCreateQueue.length<1200)return;
+  const kept=[];
+  for(const [priority,kk] of renderCreateQueue){
+    const c=blockCoordCache.get(kk);
+    if(!c){renderCreateQueued.delete(kk);continue}
+    const dx=c[0]-camera.position.x,dz=c[2]-camera.position.z;
+    if(dx*dx+dz*dz<=BLOCK_RENDER_DISTANCE_SQ)kept.push([priority,kk]);
+    else renderCreateQueued.delete(kk);
+  }
+  renderCreateQueue.length=0;renderCreateQueue.push(...kept);
+}
+function processRenderCreateQueue(){
+  if(!renderCreateQueue.length)return;
+  pruneRenderQueue();
+  if(renderCreateQueue.length>1)renderCreateQueue.sort((a,b)=>a[0]-b[0]);
+  let budget=MAX_BLOCK_CREATES_PER_FRAME;
+  while(budget-->0&&renderCreateQueue.length){
+    const [,kk]=renderCreateQueue.shift();
+    renderCreateQueued.delete(kk);
+    const type=blocks[kk];if(!type||blockMeshes.has(kk))continue;
+    const [x,y,z]=coordsForKey(kk);
+    const dx=x-camera.position.x,dz=z-camera.position.z;
+    if(dx*dx+dz*dz>BLOCK_RENDER_DISTANCE_SQ)continue;
+    if(!isBlockExposed(x,y,z,type))continue;
+    makeBlock(kk,type);
+  }
+}
+
 function indexClientBlockKey(kk){
-  const [x,,z]=kk.split(",").map(Number),ck=worldChunkKey(worldChunkCoord(x),worldChunkCoord(z));
+  const [x,,z]=coordsForKey(kk),ck=worldChunkKey(worldChunkCoord(x),worldChunkCoord(z));
   if(!clientChunkBlocks.has(ck))clientChunkBlocks.set(ck,new Set());
   clientChunkBlocks.get(ck).add(kk);
 }
 function unindexClientBlockKey(kk){
-  const [x,,z]=kk.split(",").map(Number),ck=worldChunkKey(worldChunkCoord(x),worldChunkCoord(z));
+  const [x,,z]=coordsForKey(kk),ck=worldChunkKey(worldChunkCoord(x),worldChunkCoord(z));
   const s=clientChunkBlocks.get(ck);if(!s)return;s.delete(kk);if(!s.size)clientChunkBlocks.delete(ck);
 }
 function rebuildClientChunkIndex(){
@@ -122,17 +183,17 @@ function materialFor(t){ return oneMaterial(t,TEX[t]?t:"plank"); }
 
 const key=(x,y,z)=>`${x},${y},${z}`;
 function makeBlock(k,t){
-  const [x,y,z]=k.split(",").map(Number);
-  let geo=specialGeometries[t]||blockGeo, yOffset=0;
-  if(t==="slab")yOffset=-.25;
-  else if(t==="stairs")yOffset=-.125;
-  const m=new THREE.Mesh(geo,materialsFor(t));
-  m.position.set(x,y+yOffset,z);m.userData={x,y,z,type:t};
+  if(blockMeshes.has(k))return blockMeshes.get(k);
+  const [x,y,z]=coordsForKey(k);
+  const m=acquireBlockMesh(t);
+  let yOffset=0;if(t==="slab")yOffset=-.25;else if(t==="stairs")yOffset=-.125;
+  m.geometry=specialGeometries[t]||blockGeo;m.material=materialsFor(t);
+  m.position.set(x,y+yOffset,z);m.rotation.set(0,0,0);m.scale.set(1,1,1);
+  m.userData={x,y,z,type:t};
   const dx=x-camera.position.x,dz=z-camera.position.z,dist2=dx*dx+dz*dz;
   m.visible=dist2<=BLOCK_RENDER_DISTANCE_SQ;
-  m.castShadow=SOLID.has(t) && !["leaves","glass","ice","water"].includes(t);
-  m.receiveShadow=true;
-  scene.add(m);blockMeshes.set(k,m);
+  m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ&&SOLID.has(t)&&!["leaves","glass","ice","water"].includes(t);
+  m.receiveShadow=true;scene.add(m);blockMeshes.set(k,m);return m;
 }
 const NEIGHBORS=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 function isBlockExposed(x,y,z,t){
@@ -143,7 +204,7 @@ function isBlockExposed(x,y,z,t){
 }
 function removeBlockMesh(k){
   const m=blockMeshes.get(k);if(!m)return;
-  scene.remove(m);blockMeshes.delete(k);
+  blockMeshes.delete(k);releaseBlockMesh(m);
 }
 function refreshBlockVisual(x,y,z){
   const k=key(x,y,z),t=blocks[k];
@@ -186,55 +247,41 @@ function streamWorldChunks(force=false){
   }
 }
 function rebuildWorld(){
-  for(const m of blockMeshes.values())scene.remove(m);
-  blockMeshes.clear();
+  for(const [kk,m] of [...blockMeshes]){blockMeshes.delete(kk);releaseBlockMesh(m)}
+  renderCreateQueue.length=0;renderCreateQueued.clear();
   rebuildClientChunkIndex();
-
   for(const [kk,t] of Object.entries(blocks)){
-    const [x,y,z]=kk.split(",").map(Number);
-    const dx=x-camera.position.x,dz=z-camera.position.z;
-    if(dx*dx+dz*dz<=BLOCK_RENDER_DISTANCE_SQ && isBlockExposed(x,y,z,t))makeBlock(kk,t);
+    const [x,y,z]=coordsForKey(kk),dx=x-camera.position.x,dz=z-camera.position.z,dist2=dx*dx+dz*dz;
+    if(dist2<=BLOCK_RENDER_DISTANCE_SQ&&isBlockExposed(x,y,z,t))queueBlockVisual(kk,dist2);
   }
   updateBlockVisibility(true);
 }
 function updateBlockVisibility(force=false){
-  const now=performance.now();
-  const mdx=camera.position.x-lastVisibilityX,mdz=camera.position.z-lastVisibilityZ;
-  if(!force && now-lastVisibilityUpdate<350 && mdx*mdx+mdz*mdz<2.25)return;
+  const now=performance.now(),mdx=camera.position.x-lastVisibilityX,mdz=camera.position.z-lastVisibilityZ;
+  if(!force&&now-lastVisibilityUpdate<300&&mdx*mdx+mdz*mdz<1.44)return;
+  lastVisibilityUpdate=now;lastVisibilityX=camera.position.x;lastVisibilityZ=camera.position.z;
 
-  lastVisibilityUpdate=now;
-  lastVisibilityX=camera.position.x;lastVisibilityZ=camera.position.z;
-
-  // Remove meshes beyond the exact existing render distance. This reduces
-  // scene-graph, raycast and shadow work without changing what is visible.
   for(const [kk,m] of [...blockMeshes]){
     const dx=m.position.x-camera.position.x,dz=m.position.z-camera.position.z,dist2=dx*dx+dz*dz;
-    if(dist2>BLOCK_RENDER_DISTANCE_SQ){scene.remove(m);blockMeshes.delete(kk);continue}
+    if(dist2>BLOCK_RENDER_DISTANCE_SQ){removeBlockMesh(kk);continue}
     m.visible=true;
-    m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ &&
-      SOLID.has(m.userData.type) && !["leaves","glass","ice","water"].includes(m.userData.type);
+    m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ&&SOLID.has(m.userData.type)&&!["leaves","glass","ice","water"].includes(m.userData.type);
   }
 
-  // Create only newly-nearby blocks, using nearby chunk indexes instead of
-  // scanning every loaded block in memory.
   const pcx=worldChunkCoord(camera.position.x),pcz=worldChunkCoord(camera.position.z);
   const chunkRadius=Math.ceil(BLOCK_RENDER_DISTANCE/WORLD_CHUNK_SIZE)+1;
-  for(let dz=-chunkRadius;dz<=chunkRadius;dz++){
-    for(let dx=-chunkRadius;dx<=chunkRadius;dx++){
-      const set=clientChunkBlocks.get(worldChunkKey(pcx+dx,pcz+dz));if(!set)continue;
-      for(const kk of set){
-        if(blockMeshes.has(kk))continue;
-        const t=blocks[kk];if(!t)continue;
-        const [x,y,z]=kk.split(",").map(Number);
-        const rx=x-camera.position.x,rz=z-camera.position.z;
-        if(rx*rx+rz*rz<=BLOCK_RENDER_DISTANCE_SQ && isBlockExposed(x,y,z,t))makeBlock(kk,t);
-      }
+  for(let dz=-chunkRadius;dz<=chunkRadius;dz++)for(let dx=-chunkRadius;dx<=chunkRadius;dx++){
+    const set=clientChunkBlocks.get(worldChunkKey(pcx+dx,pcz+dz));if(!set)continue;
+    for(const kk of set){
+      if(blockMeshes.has(kk)||renderCreateQueued.has(kk))continue;
+      const t=blocks[kk];if(!t)continue;
+      const [x,y,z]=coordsForKey(kk),rx=x-camera.position.x,rz=z-camera.position.z,dist2=rx*rx+rz*rz;
+      if(dist2<=BLOCK_RENDER_DISTANCE_SQ&&isBlockExposed(x,y,z,t))queueBlockVisual(kk,dist2);
     }
   }
 
   sun.position.set(camera.position.x+24,34,camera.position.z+14);
-  sun.target.position.set(camera.position.x,0,camera.position.z);
-  sun.target.updateMatrixWorld();
+  sun.target.position.set(camera.position.x,0,camera.position.z);sun.target.updateMatrixWorld();
   updateTorchLights();
 }
 function blockBox(x,y,z){return {minX:x-.5,maxX:x+.5,minY:y-.5,maxY:y+.5,minZ:z-.5,maxZ:z+.5}}
@@ -378,18 +425,19 @@ socket.on("playerJoin",p=>{if(p.dimension===dimension&&!otherPlayers.has(p.id))a
 socket.on("playerLeave",({id})=>{const o=otherPlayers.get(id);if(o){scene.remove(o.group);otherPlayers.delete(id)}});
 socket.on("playerMove",d=>{const o=otherPlayers.get(d.id);if(o)o.target.set(...d.pos)});
 socket.on("chunkData",d=>{
-  if(d.dimension!==dimension)return;const ck=worldChunkKey(d.cx,d.cz);requestedWorldChunks.delete(ck);loadedWorldChunks.add(ck);
+  if(d.dimension!==dimension)return;
+  const ck=worldChunkKey(d.cx,d.cz);requestedWorldChunks.delete(ck);loadedWorldChunks.add(ck);
   for(const [kk,type] of Object.entries(d.blocks||{})){
     blocks[kk]=type;indexClientBlockKey(kk);
-    const [x,y,z]=kk.split(",").map(Number),dx=x-camera.position.x,dz=z-camera.position.z;
-    if(dx*dx+dz*dz<=BLOCK_RENDER_DISTANCE_SQ&&isBlockExposed(x,y,z,type))refreshBlockVisual(x,y,z);
+    const [x,y,z]=coordsForKey(kk),dx=x-camera.position.x,dz=z-camera.position.z,dist2=dx*dx+dz*dz;
+    if(dist2<=BLOCK_RENDER_DISTANCE_SQ&&isBlockExposed(x,y,z,type))queueBlockVisual(kk,dist2);
   }
 });
 socket.on("blockUpdate",d=>{
   const kk=key(d.x,d.y,d.z);
   if(!d.type&&d.oldType)spawnBreakParticles(d.x,d.y,d.z,d.oldType);
   if(d.type){blocks[kk]=d.type;indexClientBlockKey(kk)}
-  else{delete blocks[kk];unindexClientBlockKey(kk)}
+  else{delete blocks[kk];unindexClientBlockKey(kk);blockCoordCache.delete(kk)}
   refreshBlockAndNeighbors(d.x,d.y,d.z);
   if(["torch","lamp","lava"].includes(d.type)||["torch","lamp","lava"].includes(d.oldType))updateTorchLights();
 });
@@ -442,10 +490,13 @@ function closeModal(id){
 const ray=new THREE.Raycaster();ray.far=6;
 const raycastTargets=[];
 function rayHit(){
-  ray.setFromCamera(new THREE.Vector2(0,0),camera);
-  raycastTargets.length=0;
-  for(const m of blockMeshes.values())raycastTargets.push(m);
-  for(const m of entityMeshes.values())raycastTargets.push(m);
+  ray.setFromCamera(new THREE.Vector2(0,0),camera);raycastTargets.length=0;
+  const pcx=worldChunkCoord(camera.position.x),pcz=worldChunkCoord(camera.position.z);
+  for(let dz=-RAYCAST_CHUNK_RADIUS;dz<=RAYCAST_CHUNK_RADIUS;dz++)for(let dx=-RAYCAST_CHUNK_RADIUS;dx<=RAYCAST_CHUNK_RADIUS;dx++){
+    const set=clientChunkBlocks.get(worldChunkKey(pcx+dx,pcz+dz));if(!set)continue;
+    for(const kk of set){const bm=blockMeshes.get(kk);if(bm&&bm.visible)raycastTargets.push(bm)}
+  }
+  for(const em of entityMeshes.values())if(em.visible)raycastTargets.push(em);
   return ray.intersectObjects(raycastTargets,false)[0]||null;
 }
 renderer.domElement.addEventListener("mousedown",e=>{if(document.pointerLockElement!==renderer.domElement)return;if(e.button===0){mouse.down=true;mineProgress=0}else if(e.button===2)rightAction()});
@@ -632,7 +683,7 @@ renderer.domElement.addEventListener("click",()=>sound(180,.03));
 function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),.05);
-  move(dt);mineTick(dt);streamWorldChunks();updateBlockVisibility();updateParticles(dt);updateWeatherParticles(dt);
+  move(dt);mineTick(dt);streamWorldChunks();updateBlockVisibility();processRenderCreateQueue();updateParticles(dt);updateWeatherParticles(dt);
   for(const o of otherPlayers.values())o.group.position.lerp(o.target,Math.min(1,dt*12));
   for(const [id,m] of entityMeshes){
     const e=entities[id];
