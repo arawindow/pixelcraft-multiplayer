@@ -13,7 +13,7 @@ const CHUNK_SIZE=16, RENDER_DISTANCE=4, SHADOW_DISTANCE=2, ENTITY_DISTANCE=52;
 let lastPlayerChunk=null, lastMoveSend=0, frameAccumulator=0, frameCounter=0, adaptiveTimer=0;
 let renderRatio=Math.min(devicePixelRatio,1.35);
 
-const scene=new THREE.Scene();scene.background=new THREE.Color(0x87ceeb);scene.fog=new THREE.Fog(0x87ceeb,30,85);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x6f9fbd);scene.fog=new THREE.Fog(0x6f9fbd,30,85);
 const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.1,250);
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:"high-performance"});
 renderer.setSize(innerWidth,innerHeight);
@@ -39,9 +39,16 @@ const TRANSPARENT=new Set(["water","glass","ice","leaves"]);
 const EMISSIVE=new Set(["lava","torch","lamp","portal"]);
 
 const textureLoader=new THREE.TextureLoader(), maxAniso=renderer.capabilities.getMaxAnisotropy();
-const atlasMap=textureLoader.load("/assets/textures/terrain_atlas.png");
+let textureAtlasReady=false;
+const atlasMap=textureLoader.load(
+  "/assets/textures/terrain_atlas.png",
+  ()=>{ textureAtlasReady=true; },
+  undefined,
+  ()=>{ console.error("Blockcraft terrain atlas failed to load"); terrainMaterial.map=null; terrainMaterial.bumpMap=null; terrainMaterial.color.set(0x7f9b69); terrainMaterial.needsUpdate=true; }
+);
 atlasMap.colorSpace=THREE.SRGBColorSpace;atlasMap.anisotropy=Math.min(8,maxAniso);atlasMap.minFilter=THREE.LinearMipmapLinearFilter;atlasMap.magFilter=THREE.LinearFilter;
 const atlasHeight=textureLoader.load("/assets/textures/terrain_height_atlas.png");
+atlasMap.onUpdate=()=>{textureAtlasReady=true};
 atlasHeight.anisotropy=Math.min(4,maxAniso);atlasHeight.minFilter=THREE.LinearMipmapLinearFilter;atlasHeight.magFilter=THREE.LinearFilter;
 
 const TILE_NAMES=["grass_top","grass_side","dirt","stone","cobble","sand","wood_side","wood_top","leaves","plank","glass","coal_ore","iron_ore","gold_ore","diamond_ore","obsidian","snow","ice","brick","farmland","wheat","torch","crafting_table","furnace","chest","rail","powered_rail","wire","lamp","portal","water","lava"];
@@ -59,9 +66,9 @@ function tileUV(name){
   const vTop=(r*CELL+PAD+eps)/ATLAS_H, vBot=(r*CELL+PAD+INNER-eps)/ATLAS_H;
   return [u0,1-vBot,u1,1-vTop];
 }
-const terrainMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,bumpMap:atlasHeight,bumpScale:.075,roughness:.84,metalness:.02});
+const terrainMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,bumpMap:atlasHeight,bumpScale:.075,roughness:.84,metalness:.02,side:THREE.DoubleSide});
 const transparentMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,bumpMap:atlasHeight,bumpScale:.035,roughness:.48,transparent:true,opacity:.76,alphaTest:.04,depthWrite:false,side:THREE.DoubleSide});
-const emissiveMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,emissiveMap:atlasMap,emissive:0xff7638,emissiveIntensity:1.15,bumpMap:atlasHeight,bumpScale:.04,roughness:.6});
+const emissiveMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,emissiveMap:atlasMap,emissive:0xff7638,emissiveIntensity:1.15,bumpMap:atlasHeight,bumpScale:.04,roughness:.6,side:THREE.DoubleSide});
 const entityDropMaterial=new THREE.MeshStandardMaterial({map:atlasMap,roughness:.75});
 
 const key=(x,y,z)=>`${x},${y},${z}`;
@@ -212,6 +219,34 @@ function axisMove(axis,amount){
   for(let i=0;i<steps;i++){const p=camera.position.clone();p[axis]+=step;if(collides(playerBox(p.x,p.y,p.z)))return false;camera.position[axis]+=step}return true;
 }
 function groundAt(x,z){for(let y=30;y>-20;y--)if(SOLID.has(blocks[key(Math.round(x),y,Math.round(z))]))return y+.5;return 0}
+function findSafeSpawn(preferred){
+  let px=Number(preferred?.[0])||0,pz=Number(preferred?.[2])||0;
+  // Search around saved position first, then origin, for a solid surface with headroom.
+  const origins=[[px,pz],[0,0]];
+  for(const [ox,oz] of origins){
+    for(let radius=0;radius<=12;radius++){
+      for(let dz=-radius;dz<=radius;dz++)for(let dx=-radius;dx<=radius;dx++){
+        if(radius && Math.abs(dx)!==radius && Math.abs(dz)!==radius)continue;
+        const x=Math.round(ox+dx),z=Math.round(oz+dz);
+        for(let y=28;y>-12;y--){
+          const t=blocks[key(x,y,z)];
+          if(t&&SOLID.has(t)&&!blocks[key(x,y+1,z)]&&!blocks[key(x,y+2,z)]){
+            return [x,y+2.2,z];
+          }
+        }
+      }
+    }
+  }
+  return [0,10,0];
+}
+function recoverCameraIfInvalid(){
+  const p=camera.position;
+  const invalid=!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.z)||p.y<-10||p.y>45||collides(playerBox(p.x,p.y,p.z));
+  if(invalid){
+    const safe=findSafeSpawn([p.x,p.y,p.z]);
+    camera.position.fromArray(safe);velY=0;
+  }
+}
 function materialFor(t){return new THREE.MeshStandardMaterial({color:COLORS[t]||0xb0b0b0,roughness:.72,metalness:["rail","powered_rail"].includes(t)?.25:0})}
 function spriteText(text,color="#fff"){
   const c=document.createElement("canvas"),ctx=c.getContext("2d");c.width=512;c.height=128;ctx.font="bold 40px Arial";ctx.textAlign="center";ctx.fillStyle="rgba(0,0,0,.45)";ctx.fillRect(0,32,512,64);ctx.fillStyle=color;ctx.fillText(text,256,78);
@@ -275,8 +310,17 @@ $("#joinBtn").onclick=()=>socket.emit("join",{username:$("#username").value});
 $("#username").addEventListener("keydown",e=>{if(e.key==="Enter")$("#joinBtn").click()});
 socket.on("joinError",e=>$("#loginError").textContent=e);
 socket.on("init",d=>{
-  me=d.self;dimension=me.dimension;blocks=d.dimensions[dimension].blocks;entities=d.entities;crops=d.crops;automation=d.automation;joined=true;
-  camera.position.fromArray(me.pos);login.classList.add("hidden");hud.classList.remove("hidden");chatWrap.classList.remove("hidden");help.classList.remove("hidden");rebuildWorld();syncEntities(entities);d.players.filter(p=>p.dimension===dimension).forEach(addOther);ui();renderer.domElement.requestPointerLock();
+  me=d.self;dimension=me.dimension;
+  blocks=(d.dimensions?.[dimension]?.blocks)||{};
+  entities=d.entities||{};crops=d.crops||{};automation=d.automation||{};joined=true;
+  rebuildWorld();
+  const safe=findSafeSpawn(me.pos);
+  camera.position.fromArray(safe);
+  me.pos=[...safe];
+  login.classList.add("hidden");hud.classList.remove("hidden");chatWrap.classList.remove("hidden");help.classList.remove("hidden");
+  syncEntities(entities);(d.players||[]).filter(p=>p.dimension===dimension).forEach(addOther);ui();
+  $("#objective").textContent=`Loaded ${Object.keys(blocks).length} blocks · ${chunkIndex.size} chunks`;
+  renderer.domElement.requestPointerLock();
 });
 socket.on("playerState",p=>{me=p;ui();if(!$("#inventoryScreen").classList.contains("hidden"))inventoryUI()});
 socket.on("playerJoin",p=>{if(p.dimension===dimension&&!otherPlayers.has(p.id))addOther(p)});
@@ -439,7 +483,7 @@ renderer.domElement.addEventListener("click",()=>sound(180,.03));
 function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),.05);
-  move(dt);mineTick(dt);processChunkQueue();
+  move(dt);recoverCameraIfInvalid();updateVisibleChunks();mineTick(dt);processChunkQueue();
   for(const o of otherPlayers.values())o.group.position.lerp(o.target,Math.min(1,dt*12));
   for(const [id,m] of entityMeshes){
     const e=entities[id];

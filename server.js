@@ -91,6 +91,12 @@ function generateDimension(dim){
     }
   }
 }
+// Repair/migrate persisted worlds from older Blockcraft builds.
+if(!state.dimensions) state.dimensions=newState().dimensions;
+for(const dim of DIMENSIONS){
+  if(!state.dimensions[dim]) state.dimensions[dim]={blocks:{},time:.22,weather:"clear"};
+  if(!state.dimensions[dim].blocks) state.dimensions[dim].blocks={};
+}
 DIMENSIONS.forEach(generateDimension);
 
 function generateStructures(){
@@ -150,7 +156,9 @@ io.on("connection", socket=>{
     if(username.length<2) return socket.emit("joinError","Use at least 2 letters/numbers.");
     if([...online.values()].includes(username)) return socket.emit("joinError","That username is already online.");
     if(!state.players[username]) state.players[username]=defaultPlayer(username);
-    const p=state.players[username]; online.set(socket.id,username);
+    const p=state.players[username];
+    if(!Array.isArray(p.pos)||p.pos.length!==3||p.pos.some(v=>!Number.isFinite(v))||p.pos[1]<-10||p.pos[1]>45)p.pos=[0,10,0];
+    online.set(socket.id,username);
     socket.join(p.dimension);
     socket.emit("init", {self:p, dimensions:state.dimensions, entities:state.entities, containers:state.containers, furnaces:state.furnaces, crops:state.crops, automation:state.automation,
       players:[...online.entries()].filter(([id])=>id!==socket.id).map(([id,n])=>publicPlayer(state.players[n],id))});
