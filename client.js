@@ -30,7 +30,7 @@ sun.shadow.mapSize.set(1536,1536);sun.shadow.camera.left=-28;sun.shadow.camera.r
 sun.shadow.bias=-0.0006;
 scene.add(hemi,sun);
 const fillLight=new THREE.DirectionalLight(0x9cb8ff,.28);fillLight.position.set(-20,12,-20);scene.add(fillLight);
-const moonLight=new THREE.AmbientLight(0x26364d,.32);scene.add(moonLight);
+const moonLight=new THREE.AmbientLight(0x60758d,.55);scene.add(moonLight);
 
 const COLORS={grass:0x64a856,dirt:0x7a5739,stone:0x777777,cobble:0x666666,sand:0xd7c27c,wood:0x8a5a2b,leaves:0x3c8c43,plank:0xb98955,glass:0xbfe8ef,coal_ore:0x303030,iron_ore:0xb88f73,gold_ore:0xe5c04c,diamond_ore:0x5be1df,water:0x3f7fc9,lava:0xff5a17,farmland:0x5b381f,wheat:0xc8b84c,torch:0xffcc55,crafting_table:0x8c6a3c,furnace:0x555555,chest:0xa46a2b,rail:0x888888,powered_rail:0xc7a13b,wire:0x8a2525,lamp:0xffe894,portal:0x8c48d7,obsidian:0x252039,snow:0xf0f5ff,ice:0xa7d8ef,brick:0x9e5744};
 const NON_SOLID=new Set(["water","lava","wheat","torch","wire","rail","powered_rail","portal"]);
@@ -110,53 +110,82 @@ function visibleNeighbor(type,neighbor){
   return !SOLID.has(neighbor)||TRANSPARENT.has(neighbor)||EMISSIVE.has(neighbor);
 }
 
-const FACE_DEFS=[
-  {id:"px",n:[1,0,0],corners:[[.5,-.5,-.5],[.5,-.5,.5],[.5,.5,.5],[.5,.5,-.5]]},
-  {id:"nx",n:[-1,0,0],corners:[[-.5,-.5,.5],[-.5,-.5,-.5],[-.5,.5,-.5],[-.5,.5,.5]]},
-  {id:"py",n:[0,1,0],corners:[[-.5,.5,-.5],[.5,.5,-.5],[.5,.5,.5],[-.5,.5,.5]]},
-  {id:"ny",n:[0,-1,0],corners:[[-.5,-.5,.5],[.5,-.5,.5],[.5,-.5,-.5],[-.5,-.5,-.5]]},
-  {id:"pz",n:[0,0,1],corners:[[.5,-.5,.5],[-.5,-.5,.5],[-.5,.5,.5],[.5,.5,.5]]},
-  {id:"nz",n:[0,0,-1],corners:[[-.5,-.5,-.5],[.5,-.5,-.5],[.5,.5,-.5],[-.5,.5,-.5]]}
-];
-
-function emptyGeom(){return {p:[],n:[],uv:[],i:[],q:0}}
-function addFace(g,x,y,z,type,f){
-  const base=g.q*4,[u0,v0,u1,v1]=tileUV(faceTile(type,f.id));
-  for(const c of f.corners){g.p.push(x+c[0],y+c[1],z+c[2]);g.n.push(...f.n)}
-  g.uv.push(u0,v0,u1,v0,u1,v1,u0,v1);
-  g.i.push(base,base+2,base+1,base,base+3,base+2);g.q++;
+const cubeGeometryCache=new Map();
+function cubeGeometryFor(type){
+  if(cubeGeometryCache.has(type))return cubeGeometryCache.get(type);
+  const g=new THREE.BoxGeometry(1,1,1);
+  // BoxGeometry has independent UVs per face. Remap each face into the atlas.
+  const uv=g.attributes.uv;
+  const groups=g.groups;
+  const faceIds=["px","nx","py","ny","pz","nz"];
+  // BoxGeometry groups are one per face, each group maps 6 indices.
+  for(let face=0;face<6;face++){
+    const [u0,v0,u1,v1]=tileUV(faceTile(type,faceIds[face]));
+    // Standard BoxGeometry produces four unique vertices per face in order.
+    const base=face*4;
+    if(base+3<uv.count){
+      uv.setXY(base,   u0,v1);
+      uv.setXY(base+1, u1,v1);
+      uv.setXY(base+2, u0,v0);
+      uv.setXY(base+3, u1,v0);
+    }
+  }
+  uv.needsUpdate=true;
+  g.computeBoundingBox();g.computeBoundingSphere();
+  cubeGeometryCache.set(type,g);
+  return g;
 }
-function geomToMesh(g,material){
-  if(!g.q)return null;
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute("position",new THREE.Float32BufferAttribute(g.p,3));
-  geo.setAttribute("normal",new THREE.Float32BufferAttribute(g.n,3));
-  geo.setAttribute("uv",new THREE.Float32BufferAttribute(g.uv,2));
-  geo.setIndex(g.i);geo.computeBoundingSphere();
-  const m=new THREE.Mesh(geo,material);m.receiveShadow=true;return m;
+function materialForBlock(type){
+  if(TRANSPARENT.has(type))return transparentMaterial;
+  if(EMISSIVE.has(type))return emissiveMaterial;
+  return terrainMaterial;
+}
+function isExposedBlock(x,y,z,type){
+  for(const [dx,dy,dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]){
+    const n=blocks[key(x+dx,y+dy,z+dz)];
+    if(!n)return true;
+    if(TRANSPARENT.has(type) && n!==type)return true;
+    if(!SOLID.has(n) || TRANSPARENT.has(n) || EMISSIVE.has(n))return true;
+  }
+  return NON_SOLID.has(type)||EMISSIVE.has(type);
 }
 function buildChunk(cx,cz){
   const ck=chunkKey(cx,cz);removeChunkMesh(ck);
   const set=chunkIndex.get(ck);if(!set||!set.size)return;
-  const opaque=emptyGeom(),trans=emptyGeom(),emit=emptyGeom();
+
+  const byType=new Map();
   for(const k of set){
     const type=blocks[k];if(!type)continue;
     const [x,y,z]=k.split(",").map(Number);
-    const target=TRANSPARENT.has(type)?trans:EMISSIVE.has(type)?emit:opaque;
-    for(const f of FACE_DEFS){
-      const nb=blocks[key(x+f.n[0],y+f.n[1],z+f.n[2])];
-      if(visibleNeighbor(type,nb))addFace(target,x,y,z,type,f);
-    }
+    if(!isExposedBlock(x,y,z,type))continue;
+    if(!byType.has(type))byType.set(type,[]);
+    byType.get(type).push([x,y,z]);
   }
+
   const meshes=[];
-  const om=geomToMesh(opaque,terrainMaterial);if(om){om.userData.layer="terrain";meshes.push(om)}
-  const tm=geomToMesh(trans,transparentMaterial);if(tm){tm.userData.layer="transparent";tm.renderOrder=2;meshes.push(tm)}
-  const em=geomToMesh(emit,emissiveMaterial);if(em){em.userData.layer="emissive";meshes.push(em)}
-  const pc=lastPlayerChunk||[cx,cz],dist=Math.max(Math.abs(cx-pc[0]),Math.abs(cz-pc[1]));
-  for(const m of meshes){m.castShadow=dist<=SHADOW_DISTANCE&&m.userData.layer==="terrain";scene.add(m)}
+  const matrix=new THREE.Matrix4();
+  const pc=lastPlayerChunk||[cx,cz];
+  const dist=Math.max(Math.abs(cx-pc[0]),Math.abs(cz-pc[1]));
+
+  for(const [type,positions] of byType){
+    if(!positions.length)continue;
+    const mesh=new THREE.InstancedMesh(cubeGeometryFor(type),materialForBlock(type),positions.length);
+    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    mesh.userData={layer:TRANSPARENT.has(type)?"transparent":EMISSIVE.has(type)?"emissive":"terrain",type,instanceBlocks:positions};
+    for(let i=0;i<positions.length;i++){
+      const [x,y,z]=positions[i];
+      matrix.makeTranslation(x,y,z);
+      mesh.setMatrixAt(i,matrix);
+    }
+    mesh.instanceMatrix.needsUpdate=true;
+    mesh.computeBoundingSphere();
+    mesh.receiveShadow=true;
+    mesh.castShadow=dist<=SHADOW_DISTANCE && mesh.userData.layer==="terrain";
+    if(mesh.userData.layer==="transparent")mesh.renderOrder=2;
+    scene.add(mesh);meshes.push(mesh);
+  }
   chunkMeshes.set(ck,{cx,cz,meshes});
-}
-function queueChunk(cx,cz,front=false){
+}function queueChunk(cx,cz,front=false){
   const ck=chunkKey(cx,cz);
   if(chunkBuildQueue.some(q=>q[0]===cx&&q[1]===cz))return;
   front?chunkBuildQueue.unshift([cx,cz]):chunkBuildQueue.push([cx,cz]);
@@ -200,6 +229,12 @@ function processChunkQueue(){
     }
     buildChunk(cx,cz);dirtyChunks.delete(ck);
   }
+}
+function updateRenderDebug(){
+  if(!joined)return;
+  let instances=0;
+  for(const rec of chunkMeshes.values())for(const m of rec.meshes)instances+=m.count||0;
+  $("#objective").textContent=`${Object.keys(blocks).length} blocks · ${chunkMeshes.size} rendered chunks · ${instances} visible instances`;
 }
 function rebuildWorld(){
   clearChunks();indexWorld();updateVisibleChunks(true);
@@ -313,13 +348,15 @@ socket.on("init",d=>{
   me=d.self;dimension=me.dimension;
   blocks=(d.dimensions?.[dimension]?.blocks)||{};
   entities=d.entities||{};crops=d.crops||{};automation=d.automation||{};joined=true;
-  rebuildWorld();
+  indexWorld();
   const safe=findSafeSpawn(me.pos);
-  camera.position.fromArray(safe);
-  me.pos=[...safe];
+  camera.position.fromArray(safe);me.pos=[...safe];
+  clearChunks();updateVisibleChunks(true);
+  const pc=chunkForPos(camera.position.x,camera.position.z);
+  // Force the player's current chunk and immediate neighbors to exist before the first visible frame.
+  for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++)buildChunk(pc[0]+dx,pc[1]+dz);
   login.classList.add("hidden");hud.classList.remove("hidden");chatWrap.classList.remove("hidden");help.classList.remove("hidden");
-  syncEntities(entities);(d.players||[]).filter(p=>p.dimension===dimension).forEach(addOther);ui();
-  $("#objective").textContent=`Loaded ${Object.keys(blocks).length} blocks · ${chunkIndex.size} chunks`;
+  syncEntities(entities);(d.players||[]).filter(p=>p.dimension===dimension).forEach(addOther);ui();updateRenderDebug();
   renderer.domElement.requestPointerLock();
 });
 socket.on("playerState",p=>{me=p;ui();if(!$("#inventoryScreen").classList.contains("hidden"))inventoryUI()});
@@ -366,11 +403,15 @@ function rayHit(){
   ray.setFromCamera(new THREE.Vector2(),camera);
   const terrain=[];for(const rec of chunkMeshes.values())terrain.push(...rec.meshes);
   const h=ray.intersectObjects([...terrain,...entityMeshes.values()],false)[0]||null;
-  if(h && !h.object.userData.entityId && h.face){
-    const n=h.face.normal.clone().transformDirection(h.object.matrixWorld);
-    const inside=h.point.clone().addScaledVector(n,-.002);
-    const x=Math.floor(inside.x+.5),y=Math.floor(inside.y+.5),z=Math.floor(inside.z+.5);
-    h.blockData={x,y,z,type:blocks[key(x,y,z)],normal:n};
+  if(h && !h.object.userData.entityId){
+    if(h.object.isInstancedMesh && Number.isInteger(h.instanceId)){
+      const pos=h.object.userData.instanceBlocks?.[h.instanceId];
+      if(pos){
+        const [x,y,z]=pos;
+        const n=h.face?.normal?.clone()||new THREE.Vector3(0,1,0);
+        h.blockData={x,y,z,type:blocks[key(x,y,z)],normal:n};
+      }
+    }
   }
   return h;
 }
@@ -499,6 +540,7 @@ function animate(){
   // Adaptive internal resolution preserves texture detail but avoids GPU overload.
   frameAccumulator+=dt;frameCounter++;adaptiveTimer+=dt;
   if(adaptiveTimer>2.0){
+    updateRenderDebug();
     const fps=frameCounter/Math.max(.001,frameAccumulator);
     let next=renderRatio;
     if(fps<42)next=Math.max(.85,renderRatio-.12);
