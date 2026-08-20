@@ -533,7 +533,7 @@ function sim(){
   const now=Date.now();
 
   for(const dim of DIMENSIONS){
-    const d=state.dimensions[dim];d.time=(d.time+.0007)%1;
+    const d=state.dimensions[dim];d.time=dim==="overworld"?.30:(d.time+.0007)%1;
     if(dim==="overworld"){
       if(Math.random()<.001)d.weather=Math.random()<.55?"rain":Math.random()<.45?"storm":"clear";
       if(Math.random()<.004)d.weather="clear";

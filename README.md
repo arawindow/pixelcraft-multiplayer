@@ -109,3 +109,13 @@ This build keeps the known-working semi-realistic per-block renderer and adds:
 - block-breaking particles
 
 The renderer itself remains the conservative working Mesh-per-visible-block renderer; no chunk/instancing rewrite is used.
+
+
+## Permanent daytime and stable shadows
+
+- The overworld is now permanently daytime.
+- The directional sun no longer travels through the sky.
+- Shadow casters are no longer repeatedly toggled as the player moves.
+- A fixed 1024×1024 soft shadow map and tighter shadow camera reduce flickering/shimmer.
+- `normalBias` is used to reduce shadow acne on voxel surfaces.
+- Rain and storms remain available, but they only change daylight brightness and fog.

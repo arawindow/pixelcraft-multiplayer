@@ -33,6 +33,12 @@ renderer.toneMappingExposure=1.08;
 document.body.appendChild(renderer.domElement);
 const hemi=new THREE.HemisphereLight(0xddeeff,0x34402f,1.15),sun=new THREE.DirectionalLight(0xfff1d6,3.0);
 sun.position.set(24,34,14);sun.castShadow=true;
+sun.shadow.mapSize.set(1024,1024);
+sun.shadow.camera.left=-22;sun.shadow.camera.right=22;
+sun.shadow.camera.top=22;sun.shadow.camera.bottom=-22;
+sun.shadow.camera.near=.5;sun.shadow.camera.far=80;
+sun.shadow.bias=-0.00015;
+sun.shadow.normalBias=.035;
 sun.shadow.mapSize.set(1024,1024);sun.shadow.camera.left=-24;sun.shadow.camera.right=24;sun.shadow.camera.top=24;sun.shadow.camera.bottom=-24;
 sun.shadow.bias=-0.0006;
 scene.add(hemi,sun);
@@ -103,7 +109,7 @@ function makeBlock(k,t){
   m.position.set(x,y+yOffset,z);m.userData={x,y,z,type:t};
   const dx=x-camera.position.x,dz=z-camera.position.z,dist2=dx*dx+dz*dz;
   m.visible=dist2<=BLOCK_RENDER_DISTANCE_SQ;
-  m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ && SOLID.has(t) && !["leaves","glass","ice"].includes(t);
+  m.castShadow=SOLID.has(t) && !["leaves","glass","ice","water"].includes(t);
   m.receiveShadow=true;
   scene.add(m);blockMeshes.set(k,m);
 }
@@ -463,22 +469,37 @@ function updateWeatherParticles(dt){
 }
 function updateSky(time,weather){
   currentWeather=weather;
-  const a=time*Math.PI*2, daylight=Math.max(.035,Math.sin(a)*.9+.14);
-  const dawn=new THREE.Color(0xe7a06d), dayc=new THREE.Color(0x7fb4d6), night=new THREE.Color(0x050a13);
-  const sky=night.clone().lerp(dayc,Math.min(1,daylight*1.18));
-  if(daylight>.12&&daylight<.42)sky.lerp(dawn,.20);
-  if(weather==="rain")sky.lerp(new THREE.Color(0x5f7180),.48);
-  if(weather==="storm")sky.lerp(new THREE.Color(0x303842),.68);
-  scene.background.copy(sky);scene.fog.color.copy(sky);
-  scene.fog.near=weather==="storm"?18:weather==="rain"?25:34;
-  scene.fog.far=weather==="storm"?58:weather==="rain"?70:92;
-  sun.intensity=daylight*3.0*(weather==="storm"?.42:weather==="rain"?.7:1);
-  hemi.intensity=.28+daylight*1.05;
-  sun.color.set(daylight<.4?0xffb77a:0xfff0d2);
-  sun.position.set(Math.cos(a)*42,Math.sin(a)*46,14);
-  renderer.toneMappingExposure=.82+daylight*.35;
-  if(dimension==="ember"){scene.background.set(0x39130d);scene.fog.color.set(0x39130d);sun.color.set(0xff6a32);sun.intensity=1.25}
-  if(dimension==="void"){scene.background.set(0x05020a);scene.fog.color.set(0x05020a);sun.color.set(0x7d65cc);sun.intensity=.5}
+
+  // Permanent daytime: no night cycle and no moving sun.
+  const sky = weather==="storm"
+    ? new THREE.Color(0x60717e)
+    : weather==="rain"
+      ? new THREE.Color(0x7892a3)
+      : new THREE.Color(0x87b8d6);
+
+  scene.background.copy(sky);
+  scene.fog.color.copy(sky);
+  scene.fog.near=weather==="storm"?22:weather==="rain"?30:38;
+  scene.fog.far=weather==="storm"?65:weather==="rain"?78:96;
+
+  // Fixed sun prevents shadow-map shimmering/flicker from a moving directional light.
+  sun.position.set(camera.position.x+22,32,camera.position.z+14);
+  sun.target.position.set(camera.position.x,0,camera.position.z);
+  sun.target.updateMatrixWorld();
+
+  sun.intensity=weather==="storm"?1.25:weather==="rain"?1.7:2.35;
+  sun.color.set(0xfff0d2);
+  hemi.intensity=weather==="storm"?.85:1.15;
+
+  if(dimension==="ember"){
+    scene.background.set(0x4a160c);
+    scene.fog.color.set(0x4a160c);
+  }
+  if(dimension==="void"){
+    scene.background.set(0x12091d);
+    scene.fog.color.set(0x12091d);
+  }
+
   $("#weatherLabel").textContent=weather.toUpperCase();
 }
 let audioCtx=null;
