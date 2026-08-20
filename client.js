@@ -96,7 +96,11 @@ function updateBlockIndex(x,y,z,type){
 }
 function removeChunkMesh(ck){
   const rec=chunkMeshes.get(ck);if(!rec)return;
-  for(const m of rec.meshes){scene.remove(m);m.geometry.dispose()}
+  for(const m of rec.meshes){
+    scene.remove(m);
+    // Geometry is shared from cubeGeometryCache across many chunk instances.
+    // Do not dispose it here or every chunk using that block type loses its GPU buffers.
+  }
   chunkMeshes.delete(ck);
 }
 function clearChunks(){
@@ -203,6 +207,11 @@ function buildChunk(cx,cz){
   if(chunkBuildQueue.some(q=>q[0]===cx&&q[1]===cz))return;
   front?chunkBuildQueue.unshift([cx,cz]):chunkBuildQueue.push([cx,cz]);
 }
+function dequeueChunk(cx,cz){
+  for(let i=chunkBuildQueue.length-1;i>=0;i--){
+    if(chunkBuildQueue[i][0]===cx&&chunkBuildQueue[i][1]===cz)chunkBuildQueue.splice(i,1);
+  }
+}
 function markChunkDirty(cx,cz){dirtyChunks.add(chunkKey(cx,cz));queueChunk(cx,cz,true)}
 function markBlockDirty(x,z){
   const [cx,cz]=chunkForBlock(x,z);markChunkDirty(cx,cz);
@@ -245,9 +254,12 @@ function processChunkQueue(){
 }
 function updateRenderDebug(){
   if(!joined)return;
-  let instances=0;
-  for(const rec of chunkMeshes.values())for(const m of rec.meshes)instances+=m.count||0;
-  $("#objective").textContent=`${Object.keys(blocks).length} blocks · ${chunkMeshes.size} rendered chunks · ${instances} visible instances`;
+  let instances=0,drawMeshes=0;
+  for(const rec of chunkMeshes.values())for(const m of rec.meshes){
+    instances+=m.count||0;
+    if(m.parent===scene && m.visible)drawMeshes++;
+  }
+  $("#objective").textContent=`${Object.keys(blocks).length} blocks · ${chunkMeshes.size} chunks · ${drawMeshes} draw meshes · ${instances} instances`;
 }
 function rebuildWorld(){
   clearChunks();indexWorld();updateVisibleChunks(true);
@@ -367,7 +379,11 @@ socket.on("init",d=>{
   clearChunks();updateVisibleChunks(true);
   const pc=chunkForPos(camera.position.x,camera.position.z);
   // Force the player's current chunk and immediate neighbors to exist before the first visible frame.
-  for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++)buildChunk(pc[0]+dx,pc[1]+dz);
+  for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++){
+    const cx=pc[0]+dx,cz=pc[1]+dz;
+    buildChunk(cx,cz);
+    dequeueChunk(cx,cz);
+  }
   login.classList.add("hidden");hud.classList.remove("hidden");chatWrap.classList.remove("hidden");help.classList.remove("hidden");
   syncEntities(entities);(d.players||[]).filter(p=>p.dimension===dimension).forEach(addOther);ui();updateRenderDebug();
   renderer.domElement.requestPointerLock();
