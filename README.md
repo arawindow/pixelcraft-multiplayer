@@ -99,3 +99,7 @@ The semi-realistic graphics are retained, but the browser renderer has been opti
 - entity/player interpolation between network updates
 - player network movement throttled to about 12.5 updates/second
 - server entity simulation snapshots reduced to 5 updates/second
+
+## Renderer visibility fix
+
+The optimized chunk renderer uses correctly wound outward-facing triangles. An earlier optimized build used reversed triangle winding, causing Three.js front-face culling to hide the terrain. Night lighting also has a low-cost ambient floor so the world remains visible without disabling the dark day/night atmosphere.

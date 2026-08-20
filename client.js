@@ -24,12 +24,13 @@ renderer.outputColorSpace=THREE.SRGBColorSpace;
 renderer.toneMapping=THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure=1.08;
 document.body.appendChild(renderer.domElement);
-const hemi=new THREE.HemisphereLight(0xddeeff,0x34402f,1.15),sun=new THREE.DirectionalLight(0xfff1d6,3.0);
+const hemi=new THREE.HemisphereLight(0xddeeff,0x34402f,1.25),sun=new THREE.DirectionalLight(0xfff1d6,3.0);
 sun.position.set(24,34,14);sun.castShadow=true;
 sun.shadow.mapSize.set(1536,1536);sun.shadow.camera.left=-28;sun.shadow.camera.right=28;sun.shadow.camera.top=28;sun.shadow.camera.bottom=-28;
 sun.shadow.bias=-0.0006;
 scene.add(hemi,sun);
-const fillLight=new THREE.DirectionalLight(0x9cb8ff,.22);fillLight.position.set(-20,12,-20);scene.add(fillLight);
+const fillLight=new THREE.DirectionalLight(0x9cb8ff,.28);fillLight.position.set(-20,12,-20);scene.add(fillLight);
+const moonLight=new THREE.AmbientLight(0x26364d,.32);scene.add(moonLight);
 
 const COLORS={grass:0x64a856,dirt:0x7a5739,stone:0x777777,cobble:0x666666,sand:0xd7c27c,wood:0x8a5a2b,leaves:0x3c8c43,plank:0xb98955,glass:0xbfe8ef,coal_ore:0x303030,iron_ore:0xb88f73,gold_ore:0xe5c04c,diamond_ore:0x5be1df,water:0x3f7fc9,lava:0xff5a17,farmland:0x5b381f,wheat:0xc8b84c,torch:0xffcc55,crafting_table:0x8c6a3c,furnace:0x555555,chest:0xa46a2b,rail:0x888888,powered_rail:0xc7a13b,wire:0x8a2525,lamp:0xffe894,portal:0x8c48d7,obsidian:0x252039,snow:0xf0f5ff,ice:0xa7d8ef,brick:0x9e5744};
 const NON_SOLID=new Set(["water","lava","wheat","torch","wire","rail","powered_rail","portal"]);
@@ -58,9 +59,9 @@ function tileUV(name){
   const vTop=(r*CELL+PAD+eps)/ATLAS_H, vBot=(r*CELL+PAD+INNER-eps)/ATLAS_H;
   return [u0,1-vBot,u1,1-vTop];
 }
-const terrainMaterial=new THREE.MeshStandardMaterial({map:atlasMap,bumpMap:atlasHeight,bumpScale:.075,roughness:.84,metalness:.02});
-const transparentMaterial=new THREE.MeshStandardMaterial({map:atlasMap,bumpMap:atlasHeight,bumpScale:.035,roughness:.48,transparent:true,opacity:.76,alphaTest:.04,depthWrite:false,side:THREE.DoubleSide});
-const emissiveMaterial=new THREE.MeshStandardMaterial({map:atlasMap,emissiveMap:atlasMap,emissive:0xff7638,emissiveIntensity:1.15,bumpMap:atlasHeight,bumpScale:.04,roughness:.6});
+const terrainMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,bumpMap:atlasHeight,bumpScale:.075,roughness:.84,metalness:.02});
+const transparentMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,bumpMap:atlasHeight,bumpScale:.035,roughness:.48,transparent:true,opacity:.76,alphaTest:.04,depthWrite:false,side:THREE.DoubleSide});
+const emissiveMaterial=new THREE.MeshStandardMaterial({color:0xffffff,map:atlasMap,emissiveMap:atlasMap,emissive:0xff7638,emissiveIntensity:1.15,bumpMap:atlasHeight,bumpScale:.04,roughness:.6});
 const entityDropMaterial=new THREE.MeshStandardMaterial({map:atlasMap,roughness:.75});
 
 const key=(x,y,z)=>`${x},${y},${z}`;
@@ -116,7 +117,7 @@ function addFace(g,x,y,z,type,f){
   const base=g.q*4,[u0,v0,u1,v1]=tileUV(faceTile(type,f.id));
   for(const c of f.corners){g.p.push(x+c[0],y+c[1],z+c[2]);g.n.push(...f.n)}
   g.uv.push(u0,v0,u1,v0,u1,v1,u0,v1);
-  g.i.push(base,base+1,base+2,base,base+2,base+3);g.q++;
+  g.i.push(base,base+2,base+1,base,base+3,base+2);g.q++;
 }
 function geomToMesh(g,material){
   if(!g.q)return null;
@@ -423,7 +424,7 @@ function updateSky(time,weather){
   scene.fog.near=weather==="storm"?18:weather==="rain"?25:34;
   scene.fog.far=weather==="storm"?58:weather==="rain"?70:92;
   sun.intensity=daylight*3.0*(weather==="storm"?.42:weather==="rain"?.7:1);
-  hemi.intensity=.28+daylight*1.05;
+  hemi.intensity=.52+daylight*.92;
   sun.color.set(daylight<.4?0xffb77a:0xfff0d2);
   sun.position.set(Math.cos(a)*42,Math.sin(a)*46,14);
   renderer.toneMappingExposure=.82+daylight*.35;
