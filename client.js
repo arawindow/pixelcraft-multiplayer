@@ -8,9 +8,30 @@ const otherPlayers=new Map(), entityMeshes=new Map(), blockMeshes=new Map();
 const WORLD_CHUNK_SIZE=16,WORLD_STREAM_RADIUS=3,WORLD_KEEP_RADIUS=4;
 const loadedWorldChunks=new Set(),requestedWorldChunks=new Set();let lastWorldStreamChunk=null;
 const worldChunkKey=(cx,cz)=>`${cx},${cz}`;const worldChunkCoord=v=>Math.floor(Math.floor(v)/WORLD_CHUNK_SIZE);
+const clientChunkBlocks=new Map();
+function indexClientBlockKey(kk){
+  const [x,,z]=kk.split(",").map(Number),ck=worldChunkKey(worldChunkCoord(x),worldChunkCoord(z));
+  if(!clientChunkBlocks.has(ck))clientChunkBlocks.set(ck,new Set());
+  clientChunkBlocks.get(ck).add(kk);
+}
+function unindexClientBlockKey(kk){
+  const [x,,z]=kk.split(",").map(Number),ck=worldChunkKey(worldChunkCoord(x),worldChunkCoord(z));
+  const s=clientChunkBlocks.get(ck);if(!s)return;s.delete(kk);if(!s.size)clientChunkBlocks.delete(ck);
+}
+function rebuildClientChunkIndex(){
+  clientChunkBlocks.clear();for(const kk of Object.keys(blocks))indexClientBlockKey(kk);
+}
 const keys={}, mouse={down:false}, clock=new THREE.Clock();
 let yaw=0,pitch=0,velY=0,grounded=false, mineTarget=null,mineProgress=0,chatting=false, currentContainer=null, riding=null, fishing=false;
 const blockGeo=new THREE.BoxGeometry(1,1,1);
+const specialGeometries={
+  slab:new THREE.BoxGeometry(1,.5,1),
+  door:new THREE.BoxGeometry(.18,1.95,1),
+  door_open:new THREE.BoxGeometry(.18,1.95,1),
+  ladder:new THREE.BoxGeometry(.08,.9,.85),
+  fence:new THREE.BoxGeometry(.32,1.25,.32),
+  stairs:new THREE.BoxGeometry(1,.75,1)
+};
 const BLOCK_RENDER_DISTANCE=48;
 const BLOCK_RENDER_DISTANCE_SQ=BLOCK_RENDER_DISTANCE*BLOCK_RENDER_DISTANCE;
 const SHADOW_BLOCK_DISTANCE=14;
@@ -102,12 +123,9 @@ function materialFor(t){ return oneMaterial(t,TEX[t]?t:"plank"); }
 const key=(x,y,z)=>`${x},${y},${z}`;
 function makeBlock(k,t){
   const [x,y,z]=k.split(",").map(Number);
-  let geo=blockGeo, yOffset=0;
-  if(t==="slab"){geo=new THREE.BoxGeometry(1,.5,1);yOffset=-.25}
-  else if(t==="door"||t==="door_open")geo=new THREE.BoxGeometry(.18,1.95,1);
-  else if(t==="ladder")geo=new THREE.BoxGeometry(.08,.9,.85);
-  else if(t==="fence")geo=new THREE.BoxGeometry(.32,1.25,.32);
-  else if(t==="stairs"){geo=new THREE.BoxGeometry(1,.75,1);yOffset=-.125}
+  let geo=specialGeometries[t]||blockGeo, yOffset=0;
+  if(t==="slab")yOffset=-.25;
+  else if(t==="stairs")yOffset=-.125;
   const m=new THREE.Mesh(geo,materialsFor(t));
   m.position.set(x,y+yOffset,z);m.userData={x,y,z,type:t};
   const dx=x-camera.position.x,dz=z-camera.position.z,dist2=dx*dx+dz*dz;
@@ -145,30 +163,78 @@ function refreshBlockAndNeighbors(x,y,z){
 
 function requestWorldChunk(cx,cz){const ck=worldChunkKey(cx,cz);if(loadedWorldChunks.has(ck)||requestedWorldChunks.has(ck))return;requestedWorldChunks.add(ck);socket.emit("chunkRequest",{dimension,cx,cz})}
 function streamWorldChunks(force=false){
-  if(!joined)return;const cx=worldChunkCoord(camera.position.x),cz=worldChunkCoord(camera.position.z);if(!force&&lastWorldStreamChunk&&lastWorldStreamChunk[0]===cx&&lastWorldStreamChunk[1]===cz)return;lastWorldStreamChunk=[cx,cz];
-  for(let dz=-WORLD_STREAM_RADIUS;dz<=WORLD_STREAM_RADIUS;dz++)for(let dx=-WORLD_STREAM_RADIUS;dx<=WORLD_STREAM_RADIUS;dx++)requestWorldChunk(cx+dx,cz+dz);
-  for(const ck of [...loadedWorldChunks]){const [ccx,ccz]=ck.split(",").map(Number);if(Math.abs(ccx-cx)<=WORLD_KEEP_RADIUS&&Math.abs(ccz-cz)<=WORLD_KEEP_RADIUS)continue;loadedWorldChunks.delete(ck);requestedWorldChunks.delete(ck);for(const kk of Object.keys(blocks)){const [x,,z]=kk.split(",").map(Number);if(worldChunkCoord(x)===ccx&&worldChunkCoord(z)===ccz){removeBlockMesh(kk);delete blocks[kk]}}}
+  if(!joined)return;
+  const cx=worldChunkCoord(camera.position.x),cz=worldChunkCoord(camera.position.z);
+  if(!force&&lastWorldStreamChunk&&lastWorldStreamChunk[0]===cx&&lastWorldStreamChunk[1]===cz)return;
+  lastWorldStreamChunk=[cx,cz];
+
+  for(let dz=-WORLD_STREAM_RADIUS;dz<=WORLD_STREAM_RADIUS;dz++)
+    for(let dx=-WORLD_STREAM_RADIUS;dx<=WORLD_STREAM_RADIUS;dx++)requestWorldChunk(cx+dx,cz+dz);
+
+  for(const ck of [...loadedWorldChunks]){
+    const [ccx,ccz]=ck.split(",").map(Number);
+    if(Math.abs(ccx-cx)<=WORLD_KEEP_RADIUS&&Math.abs(ccz-cz)<=WORLD_KEEP_RADIUS)continue;
+
+    loadedWorldChunks.delete(ck);requestedWorldChunks.delete(ck);
+    const keysInChunk=clientChunkBlocks.get(ck);
+    if(keysInChunk){
+      for(const kk of [...keysInChunk]){
+        removeBlockMesh(kk);delete blocks[kk];
+      }
+      clientChunkBlocks.delete(ck);
+    }
+  }
 }
 function rebuildWorld(){
-  for(const m of blockMeshes.values())scene.remove(m);blockMeshes.clear();
-  for(const [k,t] of Object.entries(blocks)){
-    const [x,y,z]=k.split(",").map(Number);
-    if(isBlockExposed(x,y,z,t))makeBlock(k,t);
+  for(const m of blockMeshes.values())scene.remove(m);
+  blockMeshes.clear();
+  rebuildClientChunkIndex();
+
+  for(const [kk,t] of Object.entries(blocks)){
+    const [x,y,z]=kk.split(",").map(Number);
+    const dx=x-camera.position.x,dz=z-camera.position.z;
+    if(dx*dx+dz*dz<=BLOCK_RENDER_DISTANCE_SQ && isBlockExposed(x,y,z,t))makeBlock(kk,t);
   }
   updateBlockVisibility(true);
 }
 function updateBlockVisibility(force=false){
   const now=performance.now();
   const mdx=camera.position.x-lastVisibilityX,mdz=camera.position.z-lastVisibilityZ;
-  if(!force && now-lastVisibilityUpdate<250 && mdx*mdx+mdz*mdz<4)return;
-  lastVisibilityUpdate=now;lastVisibilityX=camera.position.x;lastVisibilityZ=camera.position.z;
-  for(const m of blockMeshes.values()){
+  if(!force && now-lastVisibilityUpdate<350 && mdx*mdx+mdz*mdz<2.25)return;
+
+  lastVisibilityUpdate=now;
+  lastVisibilityX=camera.position.x;lastVisibilityZ=camera.position.z;
+
+  // Remove meshes beyond the exact existing render distance. This reduces
+  // scene-graph, raycast and shadow work without changing what is visible.
+  for(const [kk,m] of [...blockMeshes]){
     const dx=m.position.x-camera.position.x,dz=m.position.z-camera.position.z,dist2=dx*dx+dz*dz;
-    m.visible=dist2<=BLOCK_RENDER_DISTANCE_SQ;
-    m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ && SOLID.has(m.userData.type) && !["leaves","glass","ice"].includes(m.userData.type);
+    if(dist2>BLOCK_RENDER_DISTANCE_SQ){scene.remove(m);blockMeshes.delete(kk);continue}
+    m.visible=true;
+    m.castShadow=dist2<=SHADOW_BLOCK_DISTANCE_SQ &&
+      SOLID.has(m.userData.type) && !["leaves","glass","ice","water"].includes(m.userData.type);
   }
+
+  // Create only newly-nearby blocks, using nearby chunk indexes instead of
+  // scanning every loaded block in memory.
+  const pcx=worldChunkCoord(camera.position.x),pcz=worldChunkCoord(camera.position.z);
+  const chunkRadius=Math.ceil(BLOCK_RENDER_DISTANCE/WORLD_CHUNK_SIZE)+1;
+  for(let dz=-chunkRadius;dz<=chunkRadius;dz++){
+    for(let dx=-chunkRadius;dx<=chunkRadius;dx++){
+      const set=clientChunkBlocks.get(worldChunkKey(pcx+dx,pcz+dz));if(!set)continue;
+      for(const kk of set){
+        if(blockMeshes.has(kk))continue;
+        const t=blocks[kk];if(!t)continue;
+        const [x,y,z]=kk.split(",").map(Number);
+        const rx=x-camera.position.x,rz=z-camera.position.z;
+        if(rx*rx+rz*rz<=BLOCK_RENDER_DISTANCE_SQ && isBlockExposed(x,y,z,t))makeBlock(kk,t);
+      }
+    }
+  }
+
   sun.position.set(camera.position.x+24,34,camera.position.z+14);
-  sun.target.position.set(camera.position.x,0,camera.position.z);scene.add(sun.target);
+  sun.target.position.set(camera.position.x,0,camera.position.z);
+  sun.target.updateMatrixWorld();
   updateTorchLights();
 }
 function blockBox(x,y,z){return {minX:x-.5,maxX:x+.5,minY:y-.5,maxY:y+.5,minZ:z-.5,maxZ:z+.5}}
@@ -196,6 +262,26 @@ function addOther(p){
 function speech(id,text){
   const o=otherPlayers.get(id);if(!o)return;if(o.speech)o.group.remove(o.speech);o.speech=spriteText(text,"#ffe68a");o.speech.position.y=2.9;o.group.add(o.speech);setTimeout(()=>{if(o.speech){o.group.remove(o.speech);o.speech=null}},5000);
 }
+const entityGeoCache={
+  drop:new THREE.BoxGeometry(.3,.3,.3),
+  projectile:new THREE.BoxGeometry(.08,.08,.7),
+  boat:new THREE.BoxGeometry(1.6,.35,.8),
+  minecart:new THREE.BoxGeometry(1.2,.6,.8),
+  mob:new THREE.BoxGeometry(.9,1.4,.9),
+  boss:new THREE.BoxGeometry(2.5,3,2.5)
+};
+const entityMatCache=new Map();
+function entityColor(type){
+  return ["hostile","zombie"].includes(type)?0x5f9d4a:type==="skeleton"?0xd8d8ce:type==="spider"?0x302624:
+    type==="cow"?0x6c4b35:type==="pig"?0xd68c91:type==="chicken"?0xf0eee4:type==="sheep"?0xe8e8e8:
+    type==="villager"?0xb98c68:type==="boss"?0x7a2d91:0xffffff;
+}
+function entityMaterial(type){
+  if(type==="drop")return null;
+  if(entityMatCache.has(type))return entityMatCache.get(type);
+  const mat=new THREE.MeshStandardMaterial({color:type==="projectile"?0xeeeecc:type==="boat"?0x7b4c28:type==="minecart"?0x555555:entityColor(type)});
+  entityMatCache.set(type,mat);return mat;
+}
 function syncEntities(newEnt){
   entities=newEnt;
   const MAX_ENTITY_DIST2=55*55;
@@ -208,11 +294,11 @@ function syncEntities(newEnt){
     if((e.pos[0]-camera.position.x)**2+(e.pos[2]-camera.position.z)**2>MAX_ENTITY_DIST2)continue;
     let m=entityMeshes.get(id);
     if(!m){
-      if(e.type==="drop"){m=new THREE.Mesh(new THREE.BoxGeometry(.3,.3,.3),materialFor(COLORS[e.item]?e.item:"plank"))}
-      else if(e.type==="projectile"){m=new THREE.Mesh(new THREE.BoxGeometry(.08,.08,.7),new THREE.MeshStandardMaterial({color:0xeeeecc}))}
-      else if(e.type==="boat"){m=new THREE.Mesh(new THREE.BoxGeometry(1.6,.35,.8),new THREE.MeshStandardMaterial({color:0x7b4c28}))}
-      else if(e.type==="minecart"){m=new THREE.Mesh(new THREE.BoxGeometry(1.2,.6,.8),new THREE.MeshStandardMaterial({color:0x555555}))}
-      else {const color=["hostile","zombie"].includes(e.type)?0x5f9d4a:e.type==="skeleton"?0xd8d8ce:e.type==="spider"?0x302624:e.type==="cow"?0x6c4b35:e.type==="pig"?0xd68c91:e.type==="chicken"?0xf0eee4:e.type==="sheep"?0xe8e8e8:e.type==="villager"?0xb98c68:e.type==="boss"?0x7a2d91:0xffffff;m=new THREE.Mesh(new THREE.BoxGeometry(e.type==="boss"?2.5:.9,e.type==="boss"?3:1.4,e.type==="boss"?2.5:.9),new THREE.MeshStandardMaterial({color}));}
+      if(e.type==="drop")m=new THREE.Mesh(entityGeoCache.drop,materialFor(COLORS[e.item]?e.item:"plank"));
+      else if(e.type==="projectile")m=new THREE.Mesh(entityGeoCache.projectile,entityMaterial("projectile"));
+      else if(e.type==="boat")m=new THREE.Mesh(entityGeoCache.boat,entityMaterial("boat"));
+      else if(e.type==="minecart")m=new THREE.Mesh(entityGeoCache.minecart,entityMaterial("minecart"));
+      else m=new THREE.Mesh(e.type==="boss"?entityGeoCache.boss:entityGeoCache.mob,entityMaterial(e.type));
       m.userData={entityId:id,type:e.type,target:new THREE.Vector3(...e.pos)};m.position.fromArray(e.pos);scene.add(m);entityMeshes.set(id,m);
     }else m.userData.target.set(...e.pos);
   }
@@ -293,12 +379,17 @@ socket.on("playerLeave",({id})=>{const o=otherPlayers.get(id);if(o){scene.remove
 socket.on("playerMove",d=>{const o=otherPlayers.get(d.id);if(o)o.target.set(...d.pos)});
 socket.on("chunkData",d=>{
   if(d.dimension!==dimension)return;const ck=worldChunkKey(d.cx,d.cz);requestedWorldChunks.delete(ck);loadedWorldChunks.add(ck);
-  for(const [kk,type] of Object.entries(d.blocks||{})){blocks[kk]=type;const [x,y,z]=kk.split(",").map(Number);const dx=x-camera.position.x,dz=z-camera.position.z;if(dx*dx+dz*dz<=BLOCK_RENDER_DISTANCE_SQ&&isBlockExposed(x,y,z,type))refreshBlockVisual(x,y,z)}
+  for(const [kk,type] of Object.entries(d.blocks||{})){
+    blocks[kk]=type;indexClientBlockKey(kk);
+    const [x,y,z]=kk.split(",").map(Number),dx=x-camera.position.x,dz=z-camera.position.z;
+    if(dx*dx+dz*dz<=BLOCK_RENDER_DISTANCE_SQ&&isBlockExposed(x,y,z,type))refreshBlockVisual(x,y,z);
+  }
 });
 socket.on("blockUpdate",d=>{
   const kk=key(d.x,d.y,d.z);
   if(!d.type&&d.oldType)spawnBreakParticles(d.x,d.y,d.z,d.oldType);
-  if(d.type)blocks[kk]=d.type;else delete blocks[kk];
+  if(d.type){blocks[kk]=d.type;indexClientBlockKey(kk)}
+  else{delete blocks[kk];unindexClientBlockKey(kk)}
   refreshBlockAndNeighbors(d.x,d.y,d.z);
   if(["torch","lamp","lava"].includes(d.type)||["torch","lamp","lava"].includes(d.oldType))updateTorchLights();
 });
@@ -349,7 +440,14 @@ function closeModal(id){
 }
 
 const ray=new THREE.Raycaster();ray.far=6;
-function rayHit(){ray.setFromCamera(new THREE.Vector2(),camera);return ray.intersectObjects([...blockMeshes.values(),...entityMeshes.values()],false)[0]||null}
+const raycastTargets=[];
+function rayHit(){
+  ray.setFromCamera(new THREE.Vector2(0,0),camera);
+  raycastTargets.length=0;
+  for(const m of blockMeshes.values())raycastTargets.push(m);
+  for(const m of entityMeshes.values())raycastTargets.push(m);
+  return ray.intersectObjects(raycastTargets,false)[0]||null;
+}
 renderer.domElement.addEventListener("mousedown",e=>{if(document.pointerLockElement!==renderer.domElement)return;if(e.button===0){mouse.down=true;mineProgress=0}else if(e.button===2)rightAction()});
 renderer.domElement.addEventListener("mouseup",e=>{if(e.button===0){mouse.down=false;mineProgress=0;$("#mineFill").style.width="0"}});
 renderer.domElement.addEventListener("contextmenu",e=>e.preventDefault());
@@ -455,16 +553,25 @@ function updateParticles(dt){
   }
 }
 function updateTorchLights(){
-  for(const l of torchLights)scene.remove(l);torchLights.length=0;
+  while(torchLights.length<8){
+    const l=new THREE.PointLight(0xffc066,0,9,2);
+    l.visible=false;scene.add(l);torchLights.push(l);
+  }
   const candidates=[];
   for(const m of blockMeshes.values()){
-    if(!m.visible||!["torch","lamp","lava"].includes(m.userData.type))continue;
-    const d2=(m.position.x-camera.position.x)**2+(m.position.z-camera.position.z)**2;if(d2<14*14)candidates.push([d2,m]);
+    if(!["torch","lamp","lava"].includes(m.userData.type))continue;
+    const d2=(m.position.x-camera.position.x)**2+(m.position.z-camera.position.z)**2;
+    if(d2<14*14)candidates.push([d2,m]);
   }
   candidates.sort((a,b)=>a[0]-b[0]);
-  for(const [,m] of candidates.slice(0,8)){
-    const color=m.userData.type==="lava"?0xff5222:0xffc066;
-    const l=new THREE.PointLight(color,m.userData.type==="lava"?1.1:1.35,9,2);l.position.copy(m.position);l.position.y+=.4;scene.add(l);torchLights.push(l);
+
+  for(let i=0;i<torchLights.length;i++){
+    const l=torchLights[i],entry=candidates[i];
+    if(!entry){l.visible=false;continue}
+    const m=entry[1],lava=m.userData.type==="lava";
+    l.visible=true;l.color.set(lava?0xff5222:0xffc066);
+    l.intensity=lava?1.1:1.35;l.distance=9;l.decay=2;
+    l.position.copy(m.position);l.position.y+=.4;
   }
 }
 function ensureWeatherParticles(){
@@ -542,7 +649,7 @@ function animate(){
   if(adaptiveTime>2){
     const fps=fpsFrames/Math.max(.001,fpsTime);
     let next=renderPixelRatio;
-    if(fps<42)next=Math.max(.9,renderPixelRatio-.1);
+    if(fps<42)next=Math.max(Math.min(devicePixelRatio,1.25),renderPixelRatio-.1);
     else if(fps>57)next=Math.min(Math.min(devicePixelRatio,1.35),renderPixelRatio+.05);
     if(Math.abs(next-renderPixelRatio)>.02){renderPixelRatio=next;renderer.setPixelRatio(renderPixelRatio);renderer.setSize(innerWidth,innerHeight,false)}
     fpsTime=0;fpsFrames=0;adaptiveTime=0;

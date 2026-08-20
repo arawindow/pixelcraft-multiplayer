@@ -143,8 +143,13 @@ function migratePlayer(p,name){
 for(const [n,p] of Object.entries(state.players))migratePlayer(p,n);
 
 function setBlock(dim,x,y,z,type){
-  const b=state.dimensions[dim].blocks,key=k(x,y,z);
-  if(type==null)delete b[key];else b[key]=type;
+  const b=state.dimensions[dim].blocks,kk=k(x,y,z);
+  if(type==null){
+    if(b[kk]!=null){delete b[kk];if(typeof unindexServerBlock==="function")unindexServerBlock(dim,kk)}
+  }else{
+    const fresh=b[kk]==null;b[kk]=type;
+    if(fresh&&typeof indexServerBlock==="function")indexServerBlock(dim,kk);
+  }
 }
 function getBlock(dim,x,y,z){return state.dimensions[dim].blocks[k(x,y,z)]||null}
 function terrainHeight(dim,x,z){
@@ -155,6 +160,21 @@ function terrainHeight(dim,x,z){
 
 function floorDiv(n,d){return Math.floor(n/d)}
 function worldChunkKey(cx,cz){return `${cx},${cz}`}
+const serverChunkBlocks=new Map();
+function serverIndexKey(dim,x,z){return `${dim}:${worldChunkKey(floorDiv(x,WORLD_CHUNK_SIZE),floorDiv(z,WORLD_CHUNK_SIZE))}`}
+function indexServerBlock(dim,kk){
+  const [x,,z]=kk.split(",").map(Number),ck=serverIndexKey(dim,x,z);
+  if(!serverChunkBlocks.has(ck))serverChunkBlocks.set(ck,new Set());
+  serverChunkBlocks.get(ck).add(kk);
+}
+function unindexServerBlock(dim,kk){
+  const [x,,z]=kk.split(",").map(Number),ck=serverIndexKey(dim,x,z),s=serverChunkBlocks.get(ck);
+  if(!s)return;s.delete(kk);if(!s.size)serverChunkBlocks.delete(ck);
+}
+function rebuildServerChunkIndex(){
+  serverChunkBlocks.clear();
+  for(const dim of DIMENSIONS)for(const kk of Object.keys(state.dimensions[dim].blocks||{}))indexServerBlock(dim,kk);
+}
 function chunkCoordsForPos(x,z){return [floorDiv(Math.floor(x),WORLD_CHUNK_SIZE),floorDiv(Math.floor(z),WORLD_CHUNK_SIZE)]}
 function markExistingChunksGenerated(){
   for(const dim of DIMENSIONS){
@@ -197,8 +217,10 @@ function generateOtherChunk(dim,cx,cz){
 function ensureWorldChunk(dim,cx,cz){if(dim==="overworld")generateOverworldChunk(cx,cz);else generateOtherChunk(dim,cx,cz)}
 function ensureChunksAround(dim,x,z,r=SERVER_GEN_RADIUS){const [cx,cz]=chunkCoordsForPos(x,z);for(let dz=-r;dz<=r;dz++)for(let dx=-r;dx<=r;dx++)ensureWorldChunk(dim,cx+dx,cz+dz)}
 function chunkPayload(dim,cx,cz){
-  ensureWorldChunk(dim,cx,cz);const minX=cx*WORLD_CHUNK_SIZE,minZ=cz*WORLD_CHUNK_SIZE,maxX=minX+WORLD_CHUNK_SIZE-1,maxZ=minZ+WORLD_CHUNK_SIZE-1,out={};
-  for(const [kk,type] of Object.entries(state.dimensions[dim].blocks)){const [x,,z]=kk.split(",").map(Number);if(x>=minX&&x<=maxX&&z>=minZ&&z<=maxZ)out[kk]=type}return {dimension:dim,cx,cz,blocks:out};
+  ensureWorldChunk(dim,cx,cz);
+  const out={},set=serverChunkBlocks.get(`${dim}:${worldChunkKey(cx,cz)}`);
+  if(set)for(const kk of set){const type=state.dimensions[dim].blocks[kk];if(type)out[kk]=type}
+  return {dimension:dim,cx,cz,blocks:out};
 }
 function initialDimensionPayload(dim,x,z){
   ensureChunksAround(dim,x,z,SERVER_GEN_RADIUS);const [pcx,pcz]=chunkCoordsForPos(x,z),blocks={};
@@ -331,9 +353,10 @@ function craftRecipe(p,id,grid=null){
 }
 
 function save(){try{fs.writeFileSync(SAVE,JSON.stringify(state))}catch(e){console.error("save",e)}}
-setInterval(save,5000);
+setInterval(save,20000);
 process.on("SIGTERM",()=>{save();process.exit(0)});process.on("SIGINT",()=>{save();process.exit(0)});
 
+rebuildServerChunkIndex();
 const online=new Map();
 const containerWatchers=new Map();
 function publicPlayer(p,id){return{id,name:p.name,dimension:p.dimension,pos:p.pos,yaw:p.yaw,pitch:p.pitch,equipment:p.equipment,health:p.health,armor:p.armor}}
@@ -650,7 +673,15 @@ function sim(){
   }
 
   if(tickCount%2===0){
-    for(const dim of DIMENSIONS)io.to(dim).emit("tick",{time:state.dimensions[dim].time,weather:state.dimensions[dim].weather,entities:state.entities,crops:state.crops,automation:state.automation});
+    for(const [sid,name] of online){
+      const p=state.players[name],nearby={};
+      for(const [id,e] of Object.entries(state.entities)){
+        if(e.dimension!==p.dimension)continue;
+        const dx=e.pos[0]-p.pos[0],dz=e.pos[2]-p.pos[2];
+        if(dx*dx+dz*dz<=65*65)nearby[id]=e;
+      }
+      io.to(sid).emit("tick",{time:state.dimensions[p.dimension].time,weather:state.dimensions[p.dimension].weather,entities:nearby,crops:state.crops,automation:state.automation});
+    }
   }
 }
 setInterval(sim,200);
